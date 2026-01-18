@@ -1,0 +1,5 @@
+{
+  "name": "VibeOrchestra #5",
+  "description": "An advanced multi-agent orchestration platform that dynamically spawns specialized AI agent teams (10-15 nodes) to conceptualize and build projects across software, science, and creative writing based on a single prompt.",
+  "requestFramePermissions": []
+}

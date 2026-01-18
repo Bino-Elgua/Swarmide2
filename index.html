@@ -1,0 +1,113 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VibeOrchestra - Multi-Agent Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-primary: #030712;
+            --bg-secondary: #111827;
+            --accent: #6366f1;
+            --text-primary: #f3f4f6;
+            --text-secondary: #94a3b8;
+            --text-bold: #ffffff;
+            --text-main: #f3f4f6;
+            --text-dim: #94a3b8;
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            overflow-x: hidden;
+            transition: background-color 0.5s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s ease;
+        }
+        
+        * {
+            transition: background-color 0.4s ease, border-color 0.4s ease;
+        }
+
+        .glow-node {
+            filter: drop-shadow(0 0 8px var(--accent));
+        }
+        .animate-pulse-slow {
+            animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .glass-panel {
+            background: var(--bg-secondary);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+        }
+        /* Custom scrollbar using theme variables */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.05);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: var(--accent);
+            opacity: 0.3;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            opacity: 0.6;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        
+        @keyframes loading-bar {
+          0% { left: -100%; width: 30%; }
+          50% { width: 50%; }
+          100% { left: 100%; width: 20%; }
+        }
+        .animate-loading-bar {
+          animation: loading-bar 2s linear infinite;
+        }
+
+        /* Override Tailwind's hardcoded classes with theme variables */
+        .bg-slate-950 { background-color: var(--bg-primary) !important; }
+        .bg-slate-900 { background-color: var(--bg-secondary) !important; }
+        .bg-slate-800 { background-color: var(--bg-secondary) !important; opacity: 0.8; }
+        .border-slate-800 { border-color: var(--border) !important; }
+        .text-indigo-400 { color: var(--accent) !important; }
+        .bg-indigo-600 { background-color: var(--accent) !important; }
+        .hover\:bg-indigo-500:hover { background-color: var(--accent) !important; filter: brightness(1.2); }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "d3": "https://esm.sh/d3@^7.9.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
+    "jszip": "https://esm.sh/jszip@^3.10.1",
+    "react-syntax-highlighter": "https://esm.sh/react-syntax-highlighter@^15.5.0",
+    "react-syntax-highlighter/dist/esm/styles/prism": "https://esm.sh/react-syntax-highlighter@^15.5.0/dist/esm/styles/prism",
+    "prettier": "https://esm.sh/prettier@^3.0.0/standalone",
+    "prettier/parser-babel": "https://esm.sh/prettier@^3.0.0/plugins/babel",
+    "prettier/parser-html": "https://esm.sh/prettier@^3.0.0/plugins/html",
+    "prettier/parser-postcss": "https://esm.sh/prettier@^3.0.0/plugins/postcss",
+    "react-syntax-highlighter/": "https://esm.sh/react-syntax-highlighter@^16.1.0/",
+    "prettier/": "https://esm.sh/prettier@^3.8.0/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
