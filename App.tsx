@@ -629,7 +629,7 @@ const App: React.FC = () => {
 
           <div className="h-8 px-4 flex items-center justify-between border-b shrink-0 bg-black/40 z-[70]" style={{ borderColor: 'var(--border)' }}>
             <div className="flex items-center h-full space-x-1">
-               {['terminal', 'output', 'history', 'snippets', 'settings'].map(t => (
+               {['terminal', 'output', 'history', 'snippets'].map(t => (
                  <button 
                   key={t} 
                   onClick={() => { setTerminalTab(t as TerminalTab); setIsTerminalMinimized(false); }} 
@@ -678,47 +678,6 @@ const App: React.FC = () => {
                        />
                        {terminalBlinkingCursor && <div className="w-2 h-4 animate-pulse shadow-lg" style={{ backgroundColor: 'var(--accent)' }} />}
                     </form>
-                 </div>
-               )}
-
-               {terminalTab === 'settings' && (
-                 <div className="h-full overflow-y-auto space-y-8 p-2 animate-fade-in custom-scrollbar">
-                    <div className="grid grid-cols-2 gap-10">
-                       <div className="space-y-6">
-                          <div className="space-y-2">
-                             <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Terminal Theme Engine</span><span className="uppercase font-bold" style={{ color: 'var(--accent)' }}>{activeTheme}</span></div>
-                             <div className="grid grid-cols-4 gap-2">
-                               {Object.keys(GLOBAL_THEMES).map(t => (
-                                 <button key={t} onClick={() => setActiveTheme(t as keyof typeof GLOBAL_THEMES)} className={`px-2 py-1 rounded border text-[8px] uppercase font-black transition-all ${activeTheme === t ? 'bg-indigo-600 border-indigo-400 text-white' : 'bg-black/40 border-white/5 opacity-40 hover:opacity-100'}`}>{t}</button>
-                               ))}
-                             </div>
-                          </div>
-                          <div className="space-y-2">
-                             <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Font Dimension</span><span className="font-bold" style={{ color: 'var(--accent)' }}>{terminalFontSize}px</span></div>
-                             <input type="range" min="8" max="18" value={terminalFontSize} onChange={e => setTerminalFontSize(parseInt(e.target.value))} className="w-full accent-indigo-500" />
-                          </div>
-                       </div>
-                       <div className="space-y-6">
-                          <div className="space-y-2">
-                             <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Panel Opacity</span><span className="font-bold" style={{ color: 'var(--accent)' }}>{Math.round(terminalOpacity * 100)}%</span></div>
-                             <input type="range" min="0.5" max="1" step="0.01" value={terminalOpacity} onChange={e => setTerminalOpacity(parseFloat(e.target.value))} className="w-full accent-indigo-500" />
-                          </div>
-                          <div className="grid grid-cols-2 gap-4 pt-2">
-                             <label className="flex items-center space-x-3 cursor-pointer group">
-                                <div onClick={() => setTerminalBlinkingCursor(!terminalBlinkingCursor)} className={`w-9 h-4.5 rounded-full relative transition-all ${terminalBlinkingCursor ? 'bg-indigo-600 shadow-[0_0_8px_var(--accent)]' : 'bg-slate-800'}`}>
-                                   <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all ${terminalBlinkingCursor ? 'right-0.5' : 'left-0.5'}`} />
-                                </div>
-                                <span className="text-[9px] font-black uppercase opacity-60 group-hover:opacity-100">Blinking Pulse</span>
-                             </label>
-                             <label className="flex items-center space-x-3 cursor-pointer group">
-                                <div onClick={() => setTerminalShowTimestamp(!terminalShowTimestamp)} className={`w-9 h-4.5 rounded-full relative transition-all ${terminalShowTimestamp ? 'bg-indigo-600 shadow-[0_0_8px_var(--accent)]' : 'bg-slate-800'}`}>
-                                   <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all ${terminalShowTimestamp ? 'right-0.5' : 'left-0.5'}`} />
-                                </div>
-                                <span className="text-[9px] font-black uppercase opacity-60 group-hover:opacity-100">Temp Stamps</span>
-                             </label>
-                          </div>
-                       </div>
-                    </div>
                  </div>
                )}
 

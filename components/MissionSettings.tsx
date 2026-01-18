@@ -52,16 +52,21 @@ const MissionSettings: React.FC<MissionSettingsProps> = ({
 
   return (
     <div className="fixed bottom-6 right-6 z-50 max-w-sm">
-      {/* Backdrop blur when open */}
+      {/* Backdrop blur when open - blur effect on background only */}
       {isOpen && (
         <div 
-          className="fixed inset-0 backdrop-blur-sm cursor-pointer" 
+          className="fixed inset-0 cursor-pointer" 
           onClick={() => setIsOpen(false)}
-          style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)', zIndex: 40 }}
+          style={{ 
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            zIndex: 40 
+          }}
         />
       )}
 
-      {/* Settings Panel - Glassmorphism */}
+      {/* Settings Panel - No glassmorphism, solid background */}
       <div
         className={`transition-all duration-300 ease-out transform ${
           isOpen 
@@ -70,9 +75,7 @@ const MissionSettings: React.FC<MissionSettingsProps> = ({
         } rounded-2xl border shadow-2xl overflow-hidden`}
         style={{
           borderColor: 'var(--border)',
-          backgroundColor: 'rgba(15, 23, 42, 0.7)',
-          backdropFilter: 'blur(16px)',
-          WebkitBackdropFilter: 'blur(16px)',
+          backgroundColor: 'rgba(15, 23, 42, 0.95)',
         }}
       >
         {/* Header */}
