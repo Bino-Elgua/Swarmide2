@@ -7,6 +7,7 @@ import AgentList from './components/AgentList';
 import AgentHub from './components/AgentHub';
 import IDE from './components/IDE';
 import Templates from './components/Templates';
+import MissionSettings from './components/MissionSettings';
 
 type Tab = 'hub' | 'setup' | 'graph' | 'ide' | 'templates';
 
@@ -87,6 +88,10 @@ const App: React.FC = () => {
   const [terminalShowTimestamp, setTerminalShowTimestamp] = useState(true);
   const [terminalBlinkingCursor, setTerminalBlinkingCursor] = useState(true);
   const [isSpeechEnabled, setIsSpeechEnabled] = useState(true);
+  const [logicHubApiKey, setLogicHubApiKey] = useState(() => localStorage.getItem('vibe_logic_hub_key') || '');
+  const [logicHubModel, setLogicHubModel] = useState(() => localStorage.getItem('vibe_logic_hub_model') || 'gemini-3-pro-preview');
+  const [synthesisApiKey, setSynthesisApiKey] = useState(() => localStorage.getItem('vibe_synthesis_key') || '');
+  const [synthesisModel, setSynthesisModel] = useState(() => localStorage.getItem('vibe_synthesis_model') || 'gemini-3-pro-preview');
   const [snippets, setSnippets] = useState<any[]>(() => {
     const saved = localStorage.getItem('vibe_snippets');
     return saved ? JSON.parse(saved) : [
@@ -123,6 +128,10 @@ const App: React.FC = () => {
   }, [activeTheme, isDarkMode]);
 
   useEffect(() => { localStorage.setItem('vibe_snippets', JSON.stringify(snippets)); }, [snippets]);
+  useEffect(() => { localStorage.setItem('vibe_logic_hub_key', logicHubApiKey); }, [logicHubApiKey]);
+  useEffect(() => { localStorage.setItem('vibe_logic_hub_model', logicHubModel); }, [logicHubModel]);
+  useEffect(() => { localStorage.setItem('vibe_synthesis_key', synthesisApiKey); }, [synthesisApiKey]);
+  useEffect(() => { localStorage.setItem('vibe_synthesis_model', synthesisModel); }, [synthesisModel]);
 
   useEffect(() => {
     if (terminalRef.current && terminalTab === 'terminal') {
@@ -446,29 +455,10 @@ const App: React.FC = () => {
                     {['ai', 'manual'].map(m => (<button key={m} onClick={() => setProject(p => ({ ...p, teamMode: m as TeamMode }))} className={`px-4 py-1 rounded-md text-[9px] font-black uppercase transition-all ${project.teamMode === m ? 'bg-indigo-600 text-white shadow-md' : 'opacity-40'}`}>{m === 'ai' ? 'Autonomous' : 'Architected'}</button>))}
                   </div>
                 </div>
-                <div className="grid grid-cols-12 gap-6 items-start">
-                   <div className="col-span-3 space-y-4">
-                      <div className="p-4 rounded-xl border space-y-3 bg-black/20 shadow-inner" style={{ borderColor: 'var(--border)' }}>
-                         <h3 className="text-[9px] font-black uppercase tracking-widest opacity-50"><i className="fa-solid fa-chess mr-2"></i> Strategy</h3>
-                         {STRATEGY_PRESETS.map(p => (<button key={p.id} onClick={() => setStrategy(p.id)} className={`w-full p-2.5 rounded-lg border text-left transition-all flex items-center space-x-3 ${strategy === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 opacity-60'}`}><i className={`fa-solid fa-${p.icon} text-[10px]`} /><div className="overflow-hidden"><div className="text-[10px] font-black uppercase truncate">{p.label}</div><div className="text-[8px] opacity-70 truncate">{p.desc}</div></div></button>))}
-                      </div>
-                      {project.teamMode === 'manual' && (
-                        <div className="p-4 rounded-xl border bg-black/20 h-64 flex flex-col shadow-inner" style={{ borderColor: 'var(--border)' }}>
-                           <h3 className="text-[9px] font-black uppercase tracking-widest opacity-50 mb-3">Target Nodes</h3>
-                           <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1 pr-1">{Object.entries(groupedRegistry).map(([cat, agents]) => (
-                             <div key={cat} className="space-y-1"><button onClick={() => setExpandedSectors(p => p.includes(cat) ? p.filter(s => s !== cat) : [...p, cat])} className="w-full flex items-center justify-between p-1.5 text-[9px] font-black uppercase text-indigo-400/80 hover:bg-white/5 rounded-md"><span>{cat}</span><i className={`fa-solid fa-chevron-down text-[7px] transition-transform ${expandedSectors.includes(cat) ? '' : '-rotate-90'}`}></i></button>
-                             {expandedSectors.includes(cat) && agents.map(a => (<button key={a.id} onClick={() => setSelectedIds(p => p.includes(a.id) ? p.filter(i => i !== a.id) : [...p, a.id])} className={`w-full p-2 rounded-md border text-left flex items-center justify-between transition-all ${selectedIds.includes(a.id) ? 'bg-indigo-600 border-indigo-400 text-white shadow-md' : 'bg-black/20 border-white/5 text-slate-500'}`}><span className="text-[9px] font-bold uppercase truncate">{a.name}</span>{selectedIds.includes(a.id) && <i className="fa-solid fa-check text-[8px]" />}</button>))}</div>
-                           ))}</div>
-                        </div>
-                      )}
-                      <div className="p-4 rounded-xl border bg-black/20 shadow-inner" style={{ borderColor: 'var(--border)' }}>
-                         <h3 className="text-[9px] font-black uppercase tracking-widest opacity-50 mb-3">Fleet Intensity</h3>
-                         <input type="range" min="1" max="3" step="1" value={intensity} onChange={e => setIntensity(parseInt(e.target.value))} className="w-full accent-indigo-500" />
-                      </div>
-                   </div>
-                   <div className="col-span-6 space-y-6">
+                <div className="max-w-2xl mx-auto">
+                   <div className="space-y-6">
                       <div className="relative group shadow-2xl rounded-2xl overflow-hidden">
-                         <textarea value={inputPrompt} onChange={e => setInputPrompt(e.target.value)} placeholder="Define complex technical mission..." className="w-full h-80 bg-black/40 border rounded-2xl p-8 text-[13px] outline-none focus:ring-1 focus:ring-indigo-500 transition-all resize-none leading-relaxed pb-20" style={{ borderColor: 'var(--border)', color: 'var(--text-bold)' }} />
+                         <textarea value={inputPrompt} onChange={e => setInputPrompt(e.target.value)} placeholder="Define complex technical mission..." className="w-full h-96 bg-black/40 border rounded-2xl p-8 text-[13px] outline-none focus:ring-1 focus:ring-indigo-500 transition-all resize-none leading-relaxed pb-20" style={{ borderColor: 'var(--border)', color: 'var(--text-bold)' }} />
                          <div className="absolute bottom-4 left-4 flex space-x-3">
                            <button onClick={() => setProject(p => ({ ...p, enableMediaAssets: !p.enableMediaAssets }))} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase transition-all flex items-center ${project.enableMediaAssets ? 'bg-pink-600/10 border-pink-500 text-pink-400 shadow-lg shadow-pink-500/10' : 'bg-white/5 border-white/5 opacity-40 hover:opacity-100'}`}>
                              <i className={`fa-solid ${project.enableMediaAssets ? 'fa-wand-magic-sparkles' : 'fa-image'} mr-2`} />
@@ -481,20 +471,16 @@ const App: React.FC = () => {
                          </button>
                       </div>
                    </div>
-                   <div className="col-span-3 space-y-4">
-                      <div className="p-4 rounded-xl border space-y-4 bg-black/20 shadow-inner" style={{ borderColor: 'var(--border)' }}>
-                        <h3 className="text-[9px] font-black uppercase tracking-widest opacity-50">System Engine</h3>
-                        <div className="space-y-3">
-                           <div className="space-y-1"><label className="text-[8px] font-black text-slate-500 uppercase">Logic Hub</label><select className="w-full bg-slate-900 border rounded-lg p-2 text-[10px] outline-none" style={{ borderColor: 'var(--border)' }}><option>Gemini 3 Pro</option><option>Gemini 3 Flash</option></select></div>
-                           <div className="space-y-1"><label className="text-[8px] font-black text-slate-500 uppercase">Synthesis Pass</label><select className="w-full bg-slate-900 border rounded-lg p-2 text-[10px] outline-none" style={{ borderColor: 'var(--border)' }}><option>Recursive Refinement</option><option>Standard Synthesis</option></select></div>
-                        </div>
-                      </div>
-                      <div className="p-4 rounded-xl border bg-black/20 shadow-inner" style={{ borderColor: 'var(--border)' }}>
-                        <h3 className="text-[9px] font-black uppercase tracking-widest opacity-50 mb-3">Deployment Platform</h3>
-                        <div className="grid grid-cols-2 gap-2">{PLATFORMS.map(p => (<button key={p.id} onClick={() => setTargetPlatform(p.id)} className={`p-2 rounded-lg border flex flex-col items-center space-y-2 transition-all ${targetPlatform === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 opacity-40 hover:opacity-100'}`}><i className={`fa-solid fa-${p.icon} text-[10px]`} /><span className="text-[7px] font-black uppercase">{p.label}</span></button>))}</div>
-                      </div>
-                   </div>
                 </div>
+                {project.teamMode === 'manual' && (
+                  <div className="p-4 rounded-xl border bg-black/20 shadow-inner mt-6" style={{ borderColor: 'var(--border)' }}>
+                     <h3 className="text-[9px] font-black uppercase tracking-widest opacity-50 mb-3">Target Nodes</h3>
+                     <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1 pr-1 max-h-64">{Object.entries(groupedRegistry).map(([cat, agents]) => (
+                       <div key={cat} className="space-y-1"><button onClick={() => setExpandedSectors(p => p.includes(cat) ? p.filter(s => s !== cat) : [...p, cat])} className="w-full flex items-center justify-between p-1.5 text-[9px] font-black uppercase text-indigo-400/80 hover:bg-white/5 rounded-md"><span>{cat}</span><i className={`fa-solid fa-chevron-down text-[7px] transition-transform ${expandedSectors.includes(cat) ? '' : '-rotate-90'}`}></i></button>
+                       {expandedSectors.includes(cat) && agents.map(a => (<button key={a.id} onClick={() => setSelectedIds(p => p.includes(a.id) ? p.filter(i => i !== a.id) : [...p, a.id])} className={`w-full p-2 rounded-md border text-left flex items-center justify-between transition-all ${selectedIds.includes(a.id) ? 'bg-indigo-600 border-indigo-400 text-white shadow-md' : 'bg-black/20 border-white/5 text-slate-500'}`}><span className="text-[9px] font-bold uppercase truncate">{a.name}</span>{selectedIds.includes(a.id) && <i className="fa-solid fa-check text-[8px]" />}</button>))}</div>
+                     ))}</div>
+                  </div>
+                )}
               </div>
             )}
             {activeTab === 'templates' && <Templates registry={registry} onUseTemplate={(p, c, s) => { setInputPrompt(p); if (c?.strategy) setStrategy(c.strategy); if (s) { setSelectedIds(registry.filter(r => s.includes(r.name)).map(r => r.id)); setProject(prev => ({ ...prev, teamMode: 'manual' })); } setActiveTab('setup'); }} />}
@@ -687,6 +673,24 @@ const App: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* Mission Settings - Floating Panel */}
+        <MissionSettings
+          strategy={strategy}
+          intensity={intensity}
+          targetPlatform={targetPlatform}
+          logicHubApiKey={logicHubApiKey}
+          logicHubModel={logicHubModel}
+          synthesisApiKey={synthesisApiKey}
+          synthesisModel={synthesisModel}
+          onStrategyChange={setStrategy}
+          onIntensityChange={setIntensity}
+          onTargetPlatformChange={setTargetPlatform}
+          onLogicHubKeyChange={setLogicHubApiKey}
+          onLogicHubModelChange={setLogicHubModel}
+          onSynthesisKeyChange={setSynthesisApiKey}
+          onSynthesisModelChange={setSynthesisModel}
+        />
 
         {/* Synthesis Overlay */}
         {project.isSynthesizing && (
