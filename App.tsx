@@ -560,24 +560,7 @@ const App: React.FC = () => {
                   </div>
                )}
 
-               {/* Floating Mission Settings Panel */}
-               <MissionSettings
-                 strategy={strategy}
-                 intensity={intensity}
-                 targetPlatform={targetPlatform}
-                 logicHubApiKey={logicHubApiKey}
-                 logicHubModel={logicHubModel}
-                 synthesisApiKey={synthesisApiKey}
-                 synthesisModel={synthesisModel}
-                 onStrategyChange={setStrategy}
-                 onIntensityChange={setIntensity}
-                 onTargetPlatformChange={setTargetPlatform}
-                 onLogicHubKeyChange={setLogicHubApiKey}
-                 onLogicHubModelChange={setLogicHubModel}
-                 onSynthesisKeyChange={setSynthesisApiKey}
-                 onSynthesisModelChange={setSynthesisModel}
-               />
-             </div>
+               </div>
             )}
             {activeTab === 'templates' && <Templates registry={registry} onUseTemplate={(p, c, s) => { setInputPrompt(p); if (c?.strategy) setStrategy(c.strategy); if (s) { setSelectedIds(registry.filter(r => s.includes(r.name)).map(r => r.id)); setProject(prev => ({ ...prev, teamMode: 'manual' })); } setActiveTab('setup'); }} />}
             {activeTab === 'hub' && <AgentHub registry={registry} selectedIds={selectedIds} onToggleSelect={id => setSelectedIds(p => p.includes(id) ? p.filter(i => i !== id) : [...p, id])} onUpdateRegistry={setRegistry} onAddCustom={a => setRegistry(p => [...p, a])} />}
