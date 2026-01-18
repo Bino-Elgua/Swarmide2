@@ -445,35 +445,34 @@ const App: React.FC = () => {
         <div className="flex-1 flex min-h-0 relative">
           <div className="flex-1 overflow-hidden">
             {activeTab === 'setup' && (
-              <div className="h-full flex flex-col p-6 animate-fade-in overflow-y-auto no-scrollbar pb-32 relative">
+              <div className="h-full flex flex-col p-4 animate-fade-in overflow-hidden relative">
                 {/* Header */}
-                <div className="mb-8 shrink-0">
-                  <div className="flex items-center space-x-3 mb-4">
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center shadow-lg" style={{ backgroundColor: 'var(--accent)' }}><i className="fa-solid fa-chess-board text-white text-sm"></i></div>
+                <div className="mb-3 shrink-0">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center shadow-lg" style={{ backgroundColor: 'var(--accent)' }}><i className="fa-solid fa-chess-board text-white text-xs"></i></div>
                     <div>
-                      <h1 className="text-2xl font-black uppercase tracking-tight" style={{ color: 'var(--text-bold)' }}>Mission Control</h1>
-                      <p className="text-[9px] uppercase font-black text-indigo-400 tracking-[0.15em]">Strategic Cluster Orchestrator</p>
+                      <h1 className="text-lg font-black uppercase tracking-tight" style={{ color: 'var(--text-bold)' }}>Mission Control</h1>
+                      <p className="text-[8px] uppercase font-black text-indigo-400 tracking-[0.15em]">Strategic Cluster Orchestrator</p>
                     </div>
                   </div>
                 </div>
 
                 {/* Main Grid Layout */}
-                <div className="grid grid-cols-12 gap-6 flex-1">
+                <div className="grid grid-cols-12 gap-3 flex-1 overflow-hidden">
                   {/* Left Column - Strategy & Intensity */}
-                  <div className="col-span-3 space-y-4">
-                    <div className="p-5 rounded-xl border bg-gradient-to-br from-indigo-600/10 to-transparent shadow-lg" style={{ borderColor: 'var(--border)' }}>
-                      <div className="flex items-center space-x-2 mb-4">
-                        <i className="fa-solid fa-chess text-indigo-400"></i>
-                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white">Strategy</h3>
+                  <div className="col-span-3 space-y-2 overflow-y-auto custom-scrollbar">
+                    <div className="p-3 rounded-lg border bg-gradient-to-br from-indigo-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
+                      <div className="flex items-center space-x-2 mb-2">
+                        <i className="fa-solid fa-chess text-indigo-400 text-xs"></i>
+                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Strategy</h3>
                       </div>
-                      <div className="space-y-2">
+                      <div className="space-y-1">
                         {STRATEGY_PRESETS.map(p => (
-                          <button key={p.id} onClick={() => setStrategy(p.id)} className={`w-full p-2.5 rounded-lg border text-left transition-all ${strategy === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 hover:border-white/10'}`}>
-                            <div className="flex items-center space-x-2">
-                              <i className={`fa-solid fa-${p.icon} text-[9px]`} />
+                          <button key={p.id} onClick={() => setStrategy(p.id)} className={`w-full p-1.5 rounded-md border text-left transition-all text-[8px] ${strategy === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 hover:border-white/10'}`}>
+                            <div className="flex items-center space-x-1">
+                              <i className={`fa-solid fa-${p.icon} text-[8px]`} />
                               <div className="overflow-hidden flex-1">
-                                <div className="text-[9px] font-bold uppercase">{p.label}</div>
-                                <div className="text-[7px] opacity-60">{p.desc}</div>
+                                <div className="text-[8px] font-bold uppercase">{p.label}</div>
                               </div>
                             </div>
                           </button>
@@ -481,66 +480,65 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="p-5 rounded-xl border bg-gradient-to-br from-orange-600/10 to-transparent shadow-lg" style={{ borderColor: 'var(--border)' }}>
-                      <div className="flex items-center space-x-2 mb-4">
-                        <i className="fa-solid fa-fire text-orange-400"></i>
-                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white">Fleet Intensity</h3>
+                    <div className="p-3 rounded-lg border bg-gradient-to-br from-orange-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
+                      <div className="flex items-center space-x-2 mb-2">
+                        <i className="fa-solid fa-fire text-orange-400 text-xs"></i>
+                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Intensity</h3>
                       </div>
-                      <div className="space-y-3">
-                        <div className="flex justify-between text-[8px]">
-                          <span className="opacity-60">Level 1</span>
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between text-[7px]">
+                          <span className="opacity-60">1</span>
                           <span className="font-bold text-indigo-400">{intensity}/3</span>
-                          <span className="opacity-60">Level 3</span>
+                          <span className="opacity-60">3</span>
                         </div>
-                        <input type="range" min="1" max="3" step="1" value={intensity} onChange={e => setIntensity(parseInt(e.target.value))} className="w-full accent-orange-500" />
-                        <p className="text-[7px] text-slate-400 italic">Controls parallel agent deployment and computational resources.</p>
+                        <input type="range" min="1" max="3" step="1" value={intensity} onChange={e => setIntensity(parseInt(e.target.value))} className="w-full accent-orange-500 h-1" />
                       </div>
                     </div>
                   </div>
 
                   {/* Center Column - Prompt Input */}
-                  <div className="col-span-6">
-                    <div className="relative h-full flex flex-col rounded-2xl border overflow-hidden bg-black/40 shadow-2xl" style={{ borderColor: 'var(--border)' }}>
-                      <textarea value={inputPrompt} onChange={e => setInputPrompt(e.target.value)} placeholder="📋 Define your complex technical mission here..." className="flex-1 bg-transparent p-6 text-[13px] outline-none resize-none leading-relaxed" style={{ color: 'var(--text-bold)' }} />
-                      <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between">
-                        <button onClick={() => setProject(p => ({ ...p, enableMediaAssets: !p.enableMediaAssets }))} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase transition-all flex items-center ${project.enableMediaAssets ? 'bg-pink-600/10 border-pink-500 text-pink-400 shadow-lg shadow-pink-500/10' : 'bg-white/5 border-white/5 opacity-40 hover:opacity-100'}`}>
-                          <i className={`fa-solid ${project.enableMediaAssets ? 'fa-wand-magic-sparkles' : 'fa-image'} mr-2`} />
-                          {project.enableMediaAssets ? 'Assets' : 'Assets'}
+                  <div className="col-span-6 flex flex-col overflow-hidden">
+                    <div className="relative h-full flex flex-col rounded-lg border overflow-hidden bg-black/40 shadow-lg" style={{ borderColor: 'var(--border)' }}>
+                      <textarea value={inputPrompt} onChange={e => setInputPrompt(e.target.value)} placeholder="Define your mission..." className="flex-1 bg-transparent p-4 text-[12px] outline-none resize-none leading-relaxed" style={{ color: 'var(--text-bold)' }} />
+                      <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between gap-2">
+                        <button onClick={() => setProject(p => ({ ...p, enableMediaAssets: !p.enableMediaAssets }))} className={`px-2 py-1 rounded border text-[7px] font-black uppercase transition-all flex items-center ${project.enableMediaAssets ? 'bg-pink-600/10 border-pink-500 text-pink-400 shadow-lg shadow-pink-500/10' : 'bg-white/5 border-white/5 opacity-40 hover:opacity-100'}`}>
+                          <i className={`fa-solid ${project.enableMediaAssets ? 'fa-wand-magic-sparkles' : 'fa-image'} text-[6px] mr-1`} />
+                          Assets
                         </button>
-                        <button onClick={startOrchestration} disabled={project.isOrchestrating || !inputPrompt.trim()} className="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-black px-6 py-2 rounded-lg shadow-xl transition-all active:scale-95 uppercase tracking-widest text-[9px] disabled:opacity-30 border-b-2 border-black/20 flex items-center space-x-2">
-                          <span>Engage Fleet</span>
-                          <i className="fa-solid fa-bolt-lightning" />
+                        <button onClick={startOrchestration} disabled={project.isOrchestrating || !inputPrompt.trim()} className="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-black px-4 py-1 rounded-md shadow-lg transition-all active:scale-95 uppercase tracking-widest text-[7px] disabled:opacity-30 border-b-2 border-black/20 flex items-center space-x-1">
+                          <span>Engage</span>
+                          <i className="fa-solid fa-bolt-lightning text-[6px]" />
                         </button>
                       </div>
                     </div>
                   </div>
 
                   {/* Right Column - Team Mode & Deployment */}
-                  <div className="col-span-3 space-y-4">
-                    <div className="p-5 rounded-xl border bg-gradient-to-br from-purple-600/10 to-transparent shadow-lg" style={{ borderColor: 'var(--border)' }}>
-                      <div className="flex items-center space-x-2 mb-4">
-                        <i className="fa-solid fa-layer-group text-purple-400"></i>
-                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white">Team Mode</h3>
+                  <div className="col-span-3 space-y-2 overflow-y-auto custom-scrollbar">
+                    <div className="p-3 rounded-lg border bg-gradient-to-br from-purple-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
+                      <div className="flex items-center space-x-2 mb-2">
+                        <i className="fa-solid fa-layer-group text-purple-400 text-xs"></i>
+                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Team</h3>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-1">
                         {['ai', 'manual'].map(m => (
-                          <button key={m} onClick={() => setProject(p => ({ ...p, teamMode: m as TeamMode }))} className={`flex-1 px-3 py-2 rounded-lg border text-[8px] font-black uppercase transition-all ${project.teamMode === m ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5'}`}>
-                            {m === 'ai' ? 'Autonomous' : 'Architected'}
+                          <button key={m} onClick={() => setProject(p => ({ ...p, teamMode: m as TeamMode }))} className={`flex-1 px-2 py-1 rounded-md border text-[7px] font-black uppercase transition-all ${project.teamMode === m ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5'}`}>
+                            {m === 'ai' ? 'Auto' : 'Arch'}
                           </button>
                         ))}
                       </div>
                     </div>
 
-                    <div className="p-5 rounded-xl border bg-gradient-to-br from-pink-600/10 to-transparent shadow-lg" style={{ borderColor: 'var(--border)' }}>
-                      <div className="flex items-center space-x-2 mb-4">
-                        <i className="fa-solid fa-rocket text-pink-400"></i>
-                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white">Deployment</h3>
+                    <div className="p-3 rounded-lg border bg-gradient-to-br from-pink-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
+                      <div className="flex items-center space-x-2 mb-2">
+                        <i className="fa-solid fa-rocket text-pink-400 text-xs"></i>
+                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Deploy</h3>
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-2 gap-1">
                         {PLATFORMS.map(p => (
-                          <button key={p.id} onClick={() => setTargetPlatform(p.id)} className={`p-2 rounded-lg border flex flex-col items-center space-y-1 transition-all text-[7px] font-black uppercase ${targetPlatform === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 opacity-50 hover:opacity-100'}`}>
-                            <i className={`fa-solid fa-${p.icon}`} />
-                            <span className="text-[6px] leading-tight text-center">{p.label}</span>
+                          <button key={p.id} onClick={() => setTargetPlatform(p.id)} className={`p-1 rounded-md border flex flex-col items-center space-y-0.5 transition-all text-[6px] font-black uppercase ${targetPlatform === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 opacity-50 hover:opacity-100'}`}>
+                            <i className={`fa-solid fa-${p.icon} text-[7px]`} />
+                            <span className="leading-tight text-center">{p.label}</span>
                           </button>
                         ))}
                       </div>
