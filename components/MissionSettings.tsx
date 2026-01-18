@@ -51,7 +51,7 @@ const MissionSettings: React.FC<MissionSettingsProps> = ({
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 max-w-sm">
+    <>
       {/* Backdrop blur when open - blur effect on background only */}
       {isOpen && (
         <div 
@@ -61,23 +61,26 @@ const MissionSettings: React.FC<MissionSettingsProps> = ({
             backgroundColor: 'rgba(0, 0, 0, 0.5)',
             backdropFilter: 'blur(12px)',
             WebkitBackdropFilter: 'blur(12px)',
-            zIndex: 40 
+            zIndex: 40,
+            pointerEvents: 'auto'
           }}
         />
       )}
 
-      {/* Settings Panel - No glassmorphism, solid background */}
-      <div
-        className={`transition-all duration-300 ease-out transform ${
-          isOpen 
-            ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto' 
-            : 'opacity-0 scale-95 translate-y-4 pointer-events-none'
-        } rounded-2xl border shadow-2xl overflow-hidden`}
-        style={{
-          borderColor: 'var(--border)',
-          backgroundColor: 'rgba(15, 23, 42, 0.95)',
-        }}
-      >
+      {/* Settings Panel Container - higher z-index to avoid blur */}
+      <div className="fixed bottom-6 right-6 z-50 max-w-sm pointer-events-none">
+        {/* Settings Panel - No glassmorphism, solid background */}
+        <div
+          className={`transition-all duration-300 ease-out transform pointer-events-auto ${
+            isOpen 
+              ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto' 
+              : 'opacity-0 scale-95 translate-y-4 pointer-events-none'
+          } rounded-2xl border shadow-2xl overflow-hidden`}
+          style={{
+            borderColor: 'var(--border)',
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+          }}
+        >
         {/* Header */}
         <div 
           className="px-6 py-4 border-b flex items-center justify-between bg-gradient-to-r from-indigo-600/10 to-transparent"
@@ -307,7 +310,8 @@ const MissionSettings: React.FC<MissionSettingsProps> = ({
           <i className="fa-solid fa-sliders" />
         </div>
       </button>
-    </div>
+      </div>
+    </>
   );
 };
 
