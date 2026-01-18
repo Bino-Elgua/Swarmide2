@@ -51,13 +51,13 @@ const MissionSettings: React.FC<MissionSettingsProps> = ({
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
 
   return (
-    <div className="fixed bottom-6 right-6 z-40 max-w-sm">
+    <div className="fixed bottom-6 right-6 z-50 max-w-sm">
       {/* Backdrop blur when open */}
       {isOpen && (
         <div 
-          className="fixed inset-0 backdrop-blur-sm z-30 cursor-pointer" 
+          className="fixed inset-0 backdrop-blur-sm cursor-pointer" 
           onClick={() => setIsOpen(false)}
-          style={{ backgroundColor: 'rgba(0, 0, 0, 0.2)' }}
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)', zIndex: 40 }}
         />
       )}
 
