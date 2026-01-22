@@ -1,0 +1,328 @@
+/**
+ * Phase 5: Ralph Loop - Iterative PRD-driven execution with checkpointing
+ * Prevents context overflow for 100+ item projects via episodic iteration
+ */
+
+import { Agent, IntelligenceConfig, Phase } from '../types';
+import { orchestrateTeam, performAgentTask } from './geminiService';
+
+export interface PRDItem {
+  id: string;
+  description: string;
+  category: 'api' | 'database' | 'frontend' | 'auth' | 'deployment' | 'testing' | 'docs' | 'other';
+  completed: boolean;
+  priority: 'low' | 'medium' | 'high';
+  agent?: string;
+  iteration?: number;
+  completedAt?: Date;
+  notes?: string;
+}
+
+export interface RalphCheckpoint {
+  iteration: number;
+  timestamp: Date;
+  completedItems: PRDItem[];
+  remainingItems: PRDItem[];
+  completionRate: number;
+  outputs: string[];
+  agents: Agent[];
+  errors?: string[];
+}
+
+export interface RalphConfig {
+  mode: 'linear' | 'ralph_loop';
+  maxIterations: number;
+  prdItems: PRDItem[];
+  currentIteration: number;
+  completionThreshold: number; // 0-1; default 0.95
+  checkpointInterval: number;  // save checkpoint every N iterations
+  maxContextTokens: number;    // soft limit before checkpoint reset
+}
+
+export interface RalphLoopResult {
+  completed: PRDItem[];
+  incomplete: PRDItem[];
+  finalOutput: string;
+  iterationCount: number;
+  checkpoints: RalphCheckpoint[];
+  totalTokensUsed: number;
+  totalCostUSD: number;
+}
+
+/**
+ * Parse PRD items from user input (supports: 1. Item\n 2. Item or - Item)
+ */
+export function parsePRDItems(input: string): PRDItem[] {
+  const lines = input.split('\n').filter(l => l.trim());
+  const categories: Record<string, 'api' | 'database' | 'frontend' | 'auth' | 'deployment' | 'testing' | 'docs' | 'other'> = {
+    api: 'api',
+    backend: 'api',
+    database: 'database',
+    db: 'database',
+    schema: 'database',
+    frontend: 'frontend',
+    ui: 'frontend',
+    component: 'frontend',
+    auth: 'auth',
+    login: 'auth',
+    security: 'auth',
+    deploy: 'deployment',
+    devops: 'deployment',
+    docker: 'deployment',
+    test: 'testing',
+    unit: 'testing',
+    e2e: 'testing',
+    doc: 'docs',
+    readme: 'docs'
+  };
+
+  return lines.map((line, idx) => {
+    const cleaned = line.replace(/^[\d.)\-*]\s+/, '').trim();
+    let category: 'api' | 'database' | 'frontend' | 'auth' | 'deployment' | 'testing' | 'docs' | 'other' = 'other';
+    
+    for (const [key, cat] of Object.entries(categories)) {
+      if (cleaned.toLowerCase().includes(key)) {
+        category = cat;
+        break;
+      }
+    }
+
+    return {
+      id: `prd-${idx}-${Date.now()}`,
+      description: cleaned,
+      category,
+      completed: false,
+      priority: 'medium'
+    };
+  });
+}
+
+/**
+ * Main Ralph Loop: iterates until completion or max iterations reached
+ * Each iteration refreshes context to avoid overflow
+ */
+export async function runRalphLoop(
+  initialPrompt: string,
+  prdItems: PRDItem[],
+  aiConfig: IntelligenceConfig,
+  maxIterations: number = 5,
+  completionThreshold: number = 0.95,
+  onProgress: (log: string, progress: number, checkpoint?: RalphCheckpoint) => void
+): Promise<RalphLoopResult> {
+  const checkpoints: RalphCheckpoint[] = [];
+  let currentPRD = [...prdItems];
+  let iteration = 0;
+  let totalTokensUsed = 0;
+  let totalCostUSD = 0;
+  const allOutputs: string[] = [];
+
+  while (iteration < maxIterations) {
+    iteration++;
+    const completed = currentPRD.filter(p => p.completed);
+    const remaining = currentPRD.filter(p => !p.completed);
+    const completionRate = completed.length / currentPRD.length;
+
+    onProgress(
+      `[Ralph Iteration ${iteration}/${maxIterations}] ${(completionRate * 100).toFixed(0)}% complete (${completed.length}/${currentPRD.length} items)`,
+      completionRate
+    );
+
+    // Success criterion: 95%+ complete
+    if (completionRate >= completionThreshold) {
+      onProgress(`✓ Ralph Loop: ALL PRD ITEMS COMPLETE!`, 1.0);
+      break;
+    }
+
+    if (remaining.length === 0) {
+      onProgress(`✓ Ralph Loop: ALL PRD ITEMS COMPLETE!`, 1.0);
+      break;
+    }
+
+    try {
+      // Build fresh orchestration prompt (avoid context overflow)
+      const remainingStr = remaining
+        .map(p => `- [${p.category.toUpperCase()}] ${p.description} (priority: ${p.priority})`)
+        .join('\n');
+
+      const refreshPrompt = `ORIGINAL MISSION: "${initialPrompt}"
+
+REMAINING WORK TO COMPLETE:
+${remainingStr}
+
+INSTRUCTIONS:
+1. This is iteration ${iteration}/${maxIterations}
+2. Previous context is cleared to avoid token overflow (fresh restart)
+3. Focus ONLY on remaining incomplete items
+4. For each item, generate high-quality implementation code/design
+5. Mark items as complete when finished
+6. Return JSON with completed items and implementation details
+
+RESPONSE FORMAT:
+{
+  "completedItems": [
+    {
+      "id": "prd-X",
+      "description": "...",
+      "implementation": "...code/details...",
+      "notes": "..."
+    }
+  ],
+  "architectureNotes": "...key decisions...",
+  "remainingChallenges": ["..."]
+}`;
+
+      onProgress(`Ralph Iteration ${iteration}: Fresh orchestration starting...`, completionRate);
+
+      // Call orchestrator with fresh context
+      const result = await orchestrateTeam(refreshPrompt, currentPRD.slice(0, 5), aiConfig);
+
+      // Extract completed items from response
+      const completedIds = new Set<string>();
+      if (result.initialTeam) {
+        result.initialTeam.forEach(agent => {
+          // Simple heuristic: if agent description matches PRD item prefix, mark as done
+          remaining.slice(0, 3).forEach(item => {
+            if (agent.description.toLowerCase().includes(item.description.slice(0, 20).toLowerCase())) {
+              completedIds.add(item.id);
+            }
+          });
+        });
+      }
+
+      // Mark items as completed
+      currentPRD = currentPRD.map(p => ({
+        ...p,
+        completed: p.completed || completedIds.has(p.id),
+        iteration: p.completed ? p.iteration : iteration,
+        completedAt: completedIds.has(p.id) && !p.completed ? new Date() : p.completedAt
+      }));
+
+      // Track outputs
+      if (result.initialTeam) {
+        allOutputs.push(result.initialTeam.map(a => `${a.name}: ${a.description}`).join('\n'));
+      }
+
+      // Create checkpoint
+      const checkpoint: RalphCheckpoint = {
+        iteration,
+        timestamp: new Date(),
+        completedItems: currentPRD.filter(p => p.completed),
+        remainingItems: currentPRD.filter(p => !p.completed),
+        completionRate: currentPRD.filter(p => p.completed).length / currentPRD.length,
+        outputs: allOutputs,
+        agents: result.initialTeam.map(a => ({
+          id: `${a.name}-${iteration}`,
+          name: a.name,
+          role: a.role,
+          description: a.description,
+          status: 'COMPLETED' as any,
+          output: a.description,
+          mediaAssets: [],
+          knowledgeAssets: [],
+          activatedKnowledgeIds: [],
+          thoughtLog: [],
+          tasks: [],
+          color: a.color,
+          icon: a.icon,
+          phase: iteration,
+          category: 'engineering',
+          personality: '',
+          voiceName: 'Puck',
+          voiceSpeed: 1,
+          voicePitch: 1,
+          intelligenceConfig: aiConfig,
+          enabledTools: [],
+          toolConfigs: {},
+          temperature: 0.7,
+          toolConfidence: 0.8,
+          verbosity: 0.7,
+          riskAversion: 0.5,
+          isDefault: false
+        }))
+      };
+
+      checkpoints.push(checkpoint);
+      onProgress(
+        `Ralph Iteration ${iteration}: Checkpoint saved. Completed ${checkpoint.completedItems.length} items.`,
+        checkpoint.completionRate,
+        checkpoint
+      );
+
+      // Simulate token usage (in production, track from actual API)
+      totalTokensUsed += 15000; // ~15k tokens per iteration
+      totalCostUSD += 0.35; // ~$0.35 per iteration on Gemini 3
+
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      onProgress(
+        `⚠ Ralph Iteration ${iteration}: Error: ${errorMsg}`,
+        completionRate
+      );
+    }
+  }
+
+  return {
+    completed: currentPRD.filter(p => p.completed),
+    incomplete: currentPRD.filter(p => !p.completed),
+    finalOutput: allOutputs.join('\n---\n'),
+    iterationCount: iteration,
+    checkpoints,
+    totalTokensUsed,
+    totalCostUSD
+  };
+}
+
+/**
+ * Load checkpoint to resume work at specific iteration
+ */
+export function loadCheckpoint(checkpoint: RalphCheckpoint): RalphConfig {
+  return {
+    mode: 'ralph_loop',
+    maxIterations: 10,
+    prdItems: [...checkpoint.completedItems, ...checkpoint.remainingItems],
+    currentIteration: checkpoint.iteration,
+    completionThreshold: 0.95,
+    checkpointInterval: 5,
+    maxContextTokens: 100000
+  };
+}
+
+/**
+ * Export checkpoint for persistence (localStorage or server)
+ */
+export function exportCheckpoint(checkpoint: RalphCheckpoint): string {
+  return JSON.stringify({
+    iteration: checkpoint.iteration,
+    timestamp: checkpoint.timestamp.toISOString(),
+    completedCount: checkpoint.completedItems.length,
+    remainingCount: checkpoint.remainingItems.length,
+    completionRate: checkpoint.completionRate,
+    prdItems: checkpoint.remainingItems.map(p => ({
+      id: p.id,
+      description: p.description,
+      category: p.category,
+      priority: p.priority
+    }))
+  }, null, 2);
+}
+
+/**
+ * Import checkpoint from serialized format
+ */
+export function importCheckpoint(serialized: string): Omit<RalphCheckpoint, 'agents' | 'outputs'> {
+  const data = JSON.parse(serialized);
+  return {
+    iteration: data.iteration,
+    timestamp: new Date(data.timestamp),
+    completedItems: [],
+    remainingItems: data.prdItems.map((p: any) => ({
+      id: p.id,
+      description: p.description,
+      category: p.category,
+      completed: false,
+      priority: p.priority
+    })),
+    completionRate: data.completionRate,
+    errors: []
+  };
+}

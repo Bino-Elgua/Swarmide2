@@ -7,9 +7,10 @@ interface AgentListProps {
   phases?: Phase[];
   activeAgentId?: string;
   onSelectAgent: (id: string, initialMode?: 'work' | 'hub') => void;
+  onEditAgent?: (agent: Agent) => void;
 }
 
-const AgentList: React.FC<AgentListProps> = ({ agents, phases, activeAgentId, onSelectAgent }) => {
+const AgentList: React.FC<AgentListProps> = ({ agents, phases, activeAgentId, onSelectAgent, onEditAgent }) => {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [collapsedPhases, setCollapsedPhases] = useState<Record<number, boolean>>({});
   const [searchQuery, setSearchQuery] = useState('');
@@ -219,6 +220,21 @@ const AgentList: React.FC<AgentListProps> = ({ agents, phases, activeAgentId, on
                             >
                               <i className="fa-solid fa-cog text-sm"></i>
                             </button>
+
+                            {/* Edit Agent Button */}
+                            {onEditAgent && (
+                              <button 
+                                onClick={() => onEditAgent(agent)}
+                                title="Edit Agent Parameters"
+                                className={`w-10 h-[68px] rounded-xl flex items-center justify-center border transition-all ${
+                                  isActive 
+                                    ? 'bg-amber-600/10 border-amber-500/40 text-amber-400' 
+                                    : 'bg-slate-900/40 border-slate-800/50 text-slate-700 hover:text-amber-500 hover:bg-slate-800'
+                                }`}
+                              >
+                                <i className="fa-solid fa-sliders text-sm"></i>
+                              </button>
+                            )}
                           </div>
 
                           {isHovered && (

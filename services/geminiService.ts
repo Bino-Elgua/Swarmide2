@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Type, GenerateContentResponse, Modality } from "@google/genai";
-import { OrchestrationResponse, SynthesisResponse, Agent, ToolConfigs, ElevenLabsConfig, MediaAsset, IntelligenceConfig, KnowledgeAsset } from "../types";
+import { OrchestrationResponse, SynthesisResponse, Agent, ToolConfigs, ElevenLabsConfig, MediaAsset, IntelligenceConfig, KnowledgeAsset, ProposalOutput, CostMetrics } from "../types";
+import { estimateCost } from "./costCalculator";
 
 // Global speech queue to prevent overlapping voices
 class SpeechQueue {
@@ -178,8 +179,17 @@ export const performAgentTask = async (
   agent: Agent,
   projectContext: string,
   previousOutputs: string,
-  enableMedia: boolean = false
-): Promise<{ result: string; thoughts: string[]; media?: MediaAsset }> => {
+  enableMedia: boolean = false,
+  requestProposal: boolean = false,
+  costTracker?: (metrics: CostMetrics) => void
+): Promise<{ 
+  result: string; 
+  thoughts: string[]; 
+  media?: MediaAsset;
+  proposal?: ProposalOutput;
+  tokensUsed?: number;
+  costUSD?: number;
+}> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const verbosityInst = agent.verbosity > 0.8 
@@ -242,11 +252,27 @@ export const performAgentTask = async (
     
     ${agent.toolConfigs.logicEngine?.wisdomRefinement ? "Apply Wisdom Refinement: Audit your logic against first principles before finalizing." : ""}
     
+    ${requestProposal ? `
+    PROPOSAL REQUEST:
+    If you are proposing an architecture or design decision, structure it as:
+    {
+      "architecture": "detailed design description",
+      "rationale": "why this approach is optimal",
+      "tradeoffs": { 
+        "pro": ["benefit1", "benefit2"],
+        "con": ["tradeoff1", "tradeoff2"]
+      },
+      "confidence": 0.85,
+      "dependencies": ["other_agent_or_component"],
+      "risks": ["potential_risk"]
+    }` : ''}
+    
     MANDATORY RESPONSE FORMAT:
     Return a JSON object with:
     1. 'thoughts': A list of 2-4 narrative sentences describing your internal reasoning.
     2. 'result': The actual technical output produced.
-    3. 'mediaPrompt': If mediaSynth is enabled and you are generating a visual asset, provide a highly descriptive prompt for image/video generation here. Otherwise, null.`;
+    3. 'mediaPrompt': If mediaSynth is enabled and you are generating a visual asset, provide a highly descriptive prompt for image/video generation here. Otherwise, null.
+    ${requestProposal ? '4. \'proposal\': If applicable, the structured proposal object (see PROPOSAL REQUEST above). Otherwise, omit.' : ''}`;
 
   const initialResponse = await ai.models.generateContent({
     model: modelToUse as any,
@@ -257,15 +283,35 @@ export const performAgentTask = async (
       thinkingConfig: { thinkingBudget: Math.floor(maxOutputTokens / 2) },
       topP: agent.intelligenceConfig?.topP || 0.95,
       responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          thoughts: { type: Type.ARRAY, items: { type: Type.STRING } },
-          result: { type: Type.STRING },
-          mediaPrompt: { type: Type.STRING, nullable: true }
-        },
-        required: ["thoughts", "result", "mediaPrompt"]
-      }
+       responseSchema: {
+         type: Type.OBJECT,
+         properties: {
+           thoughts: { type: Type.ARRAY, items: { type: Type.STRING } },
+           result: { type: Type.STRING },
+           mediaPrompt: { type: Type.STRING, nullable: true },
+           ...(requestProposal && {
+             proposal: {
+               type: Type.OBJECT,
+               properties: {
+                 architecture: { type: Type.STRING },
+                 rationale: { type: Type.STRING },
+                 tradeoffs: {
+                   type: Type.OBJECT,
+                   properties: {
+                     pro: { type: Type.ARRAY, items: { type: Type.STRING } },
+                     con: { type: Type.ARRAY, items: { type: Type.STRING } }
+                   }
+                 },
+                 confidence: { type: Type.NUMBER },
+                 dependencies: { type: Type.ARRAY, items: { type: Type.STRING } },
+                 risks: { type: Type.ARRAY, items: { type: Type.STRING } },
+                 costEstimate: { type: Type.NUMBER, nullable: true }
+               }
+             }
+           })
+         },
+         required: ["thoughts", "result", "mediaPrompt"]
+       }
     }
   });
 
@@ -332,8 +378,40 @@ export const performAgentTask = async (
       console.error("Media Synthesis Error:", err);
     }
   }
+
+  // Extract token usage and calculate cost
+  const usageMetadata = (initialResponse as any).usageMetadata || {};
+  const inputTokens = usageMetadata.promptTokenCount || 0;
+  const outputTokens = usageMetadata.candidatesTokenCount || 0;
+  const tokensUsed = inputTokens + outputTokens;
   
-  return { ...currentData, media };
+  const costEstimate = estimateCost(modelToUse, inputTokens, outputTokens);
+  
+  // Track cost if callback provided
+  if (costTracker) {
+    const metrics: CostMetrics = {
+      modelId: modelToUse,
+      inputTokens,
+      outputTokens,
+      costUSD: costEstimate.total,
+      timestamp: new Date(),
+      agentName: agent.name
+    };
+    costTracker(metrics);
+  }
+
+  // Build proposal if requested
+  let proposal: ProposalOutput | undefined;
+  if (requestProposal && currentData.proposal) {
+    proposal = {
+      id: `proposal-${agent.id}-${Date.now()}`,
+      agentId: agent.id,
+      agentName: agent.name,
+      ...currentData.proposal
+    };
+  }
+  
+  return { ...currentData, media, proposal, tokensUsed, costUSD: costEstimate.total };
 };
 
 export const synthesizeProject = async (
