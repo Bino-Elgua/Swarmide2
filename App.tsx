@@ -1,13 +1,19 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { ProjectState, Agent, AgentStatus, OrchestrationResponse, Message, ProtocolMessage, Phase, FileEntry, TeamMode, TerminalTab, FileVersion, AgentTask, AIProvider, IntelligenceConfig } from './types';
+import { ProjectState, Agent, AgentStatus, OrchestrationResponse, Message, ProtocolMessage, Phase, FileEntry, TeamMode, TerminalTab, FileVersion, AgentTask, AIProvider, IntelligenceConfig, ProposalOutput, ConflictResolution, CostMetrics } from './types';
 import { orchestrateTeam, performAgentTask, synthesizeProject, speakText } from './services/geminiService';
+import { resolveConflictingProposals } from './services/conflictResolver';
+import { validateBudget } from './services/costCalculator';
+import { runRalphLoop, PRDItem, RalphCheckpoint, parsePRDItems } from './services/ralphLoop';
 import { HUB_REGISTRY } from './constants';
 import AgentLiveFeed from './components/AgentLiveFeed';
 import AgentList from './components/AgentList';
 import AgentHub from './components/AgentHub';
 import IDE from './components/IDE';
 import Templates from './components/Templates';
-import MissionSettings from './components/MissionSettings';
+import AgentEditor from './components/AgentEditor';
+import ConflictResolver from './components/ConflictResolver';
+import CostTracker from './components/CostTracker';
+import RalphLoopPanel from './components/RalphLoopPanel';
 
 type Tab = 'hub' | 'setup' | 'graph' | 'ide' | 'templates';
 
@@ -92,6 +98,9 @@ const App: React.FC = () => {
   const [logicHubModel, setLogicHubModel] = useState(() => localStorage.getItem('vibe_logic_hub_model') || 'gemini-3-pro-preview');
   const [synthesisApiKey, setSynthesisApiKey] = useState(() => localStorage.getItem('vibe_synthesis_key') || '');
   const [synthesisModel, setSynthesisModel] = useState(() => localStorage.getItem('vibe_synthesis_model') || 'gemini-3-pro-preview');
+  const [agentEditorOpen, setAgentEditorOpen] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [isTargetNodesCollapsed, setIsTargetNodesCollapsed] = useState(false);
   const [snippets, setSnippets] = useState<any[]>(() => {
     const saved = localStorage.getItem('vibe_snippets');
     return saved ? JSON.parse(saved) : [
@@ -101,6 +110,27 @@ const App: React.FC = () => {
       { id: '4', label: 'System Help', cmd: 'help' }
     ];
   });
+
+  // Phase 1: Conflict Resolution & Cost Tracking
+  const [proposalHistory, setProposalHistory] = useState<ProposalOutput[]>([]);
+  const [conflictLog, setConflictLog] = useState<ConflictResolution[]>([]);
+  const [costMetrics, setCostMetrics] = useState<CostMetrics[]>([]);
+  const [costBudgetUSD, setCostBudgetUSD] = useState<number | undefined>(10); // Default $10
+  const [costActualUSD, setCostActualUSD] = useState<number>(0);
+  const [synthesisStrategy, setSynthesisStrategy] = useState<'voting' | 'hierarchical' | 'meta_reasoning' | 'user_select'>('voting');
+  const [showConflictResolver, setShowConflictResolver] = useState(false);
+  const [conflictingProposals, setConflictingProposals] = useState<ProposalOutput[]>([]);
+  const [selectedProposal, setSelectedProposal] = useState<ProposalOutput | undefined>();
+  const [resolutionReasoning, setResolutionReasoning] = useState<string>('');
+
+  // Phase 5: Ralph Loop - PRD-driven execution
+  const [ralphEnabled, setRalphEnabled] = useState(false);
+  const [prdItems, setPrdItems] = useState<PRDItem[]>([]);
+  const [ralphIteration, setRalphIteration] = useState(0);
+  const [ralphMaxIterations, setRalphMaxIterations] = useState(5);
+  const [ralphCompletionRate, setRalphCompletionRate] = useState(0);
+  const [ralphCheckpoints, setRalphCheckpoints] = useState<RalphCheckpoint[]>([]);
+  const [isRalphRunning, setIsRalphRunning] = useState(false);
 
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInputRef = useRef<HTMLInputElement>(null);
@@ -199,6 +229,78 @@ const App: React.FC = () => {
     }
   };
 
+  const runRalphLoopHandler = async (prdItems: PRDItem[]) => {
+    if (!inputPrompt.trim()) {
+      addLog('ERROR: Cannot start Ralph Loop without initial mission prompt.');
+      return;
+    }
+
+    setIsRalphRunning(true);
+    setRalphEnabled(true);
+    setPrdItems(prdItems);
+    addLog(`Ralph Loop: Starting with ${prdItems.length} PRD items across up to ${ralphMaxIterations} iterations...`);
+
+    if (isSpeechEnabled) speakText("Ralph Loop activated. Beginning iterative PRD-driven execution.");
+
+    try {
+      const result = await runRalphLoop(
+        inputPrompt,
+        prdItems,
+        project.orchestratorConfig,
+        ralphMaxIterations,
+        0.95, // 95% completion threshold
+        (log: string, progress: number, checkpoint?: RalphCheckpoint) => {
+          addLog(log);
+          setRalphCompletionRate(progress);
+
+          if (checkpoint) {
+            setRalphIteration(checkpoint.iteration);
+            setRalphCheckpoints(prev => [...prev, checkpoint]);
+            addLog(`📌 Checkpoint ${checkpoint.iteration}: ${(checkpoint.completionRate * 100).toFixed(0)}% complete`);
+          }
+        }
+      );
+
+      // Final summary
+      addLog(`✓ Ralph Loop Complete: ${result.completed.length}/${result.completed.length + result.incomplete.length} items`);
+      addLog(`Total tokens used: ${result.totalTokensUsed}. Total cost: $${result.totalCostUSD.toFixed(2)}`);
+      setPrdItems(result.completed.concat(result.incomplete));
+
+      if (isSpeechEnabled) speakText(`Ralph Loop complete. ${result.completed.length} items finished.`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addLog(`ERROR: Ralph Loop failed: ${msg}`);
+    } finally {
+      setIsRalphRunning(false);
+    }
+  };
+
+  const handleLoadRalphCheckpoint = (checkpoint: RalphCheckpoint) => {
+    setPrdItems([...checkpoint.completedItems, ...checkpoint.remainingItems]);
+    setRalphIteration(checkpoint.iteration);
+    addLog(`Loaded checkpoint from iteration ${checkpoint.iteration}. Ready to resume.`);
+  };
+
+  const handleExportRalphCheckpoints = (checkpoints: RalphCheckpoint[]) => {
+    const exported = checkpoints.map(cp => ({
+      iteration: cp.iteration,
+      timestamp: cp.timestamp.toISOString(),
+      completed: cp.completedItems.length,
+      remaining: cp.remainingItems.length,
+      rate: (cp.completionRate * 100).toFixed(0) + '%'
+    }));
+
+    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ralph-checkpoints-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    addLog(`✓ Exported ${checkpoints.length} checkpoints to JSON file.`);
+  };
+
   const runExecutionLoop = async (initialAgents: Agent[], phases: Phase[]) => {
     if (isSpeechEnabled) speakText("Strategic recruitment complete. Commencing mission execution loops.");
     
@@ -256,7 +358,28 @@ const App: React.FC = () => {
             .map(a => `${a.role} result: ${a.output}`)
             .join('\n\n');
 
-          const taskResult = await performAgentTask(agent, contextSnapshot, previousOutputs, project.enableMediaAssets);
+          // Cost tracking callback
+          const handleCostMetric = (metric: CostMetrics) => {
+            setCostMetrics(prev => [...prev, metric]);
+            setCostActualUSD(prev => {
+              const newTotal = prev + metric.costUSD;
+              // Validate budget
+              const validation = validateBudget(newTotal, costBudgetUSD);
+              validation.warnings.forEach(w => {
+                addLog(`💰 ${w}`);
+              });
+              return newTotal;
+            });
+          };
+
+          const taskResult = await performAgentTask(
+            agent, 
+            contextSnapshot, 
+            previousOutputs, 
+            project.enableMediaAssets,
+            true,  // requestProposal = true for Phase 1
+            handleCostMetric  // Pass cost callback
+          );
           
           // Commit
           updateAgentStatus(agent.id, AgentStatus.COMPLETED, {
@@ -281,6 +404,37 @@ const App: React.FC = () => {
           addLog(`FAULT: Node ${agent.name} encountered a logical bypass error.`);
         }
       }));
+
+      // Collect proposals from completed agents in this phase
+      const phaseAgentIds = phaseAgents.map(a => a.id);
+      const phaseProposals: ProposalOutput[] = [];
+      
+      // Check if any proposals were returned (this would come from task results)
+      // For now, we store empty proposals - they'll be populated by geminiService when available
+      if (phaseProposals.length > 0) {
+        setProposalHistory(prev => [...prev, ...phaseProposals]);
+        
+        // Detect conflict (2+ proposals)
+        if (phaseProposals.length > 1) {
+          addLog(`⚔️ CONFLICT: ${phaseProposals.length} proposals detected in Phase ${phaseIdx + 1}`);
+          setConflictingProposals(phaseProposals);
+          setShowConflictResolver(true);
+          
+          // PAUSE: Wait for user to select proposal
+          // Modal will update selectedProposal via setSelectedProposal
+          // Continue when user clicks Confirm
+          await new Promise(resolve => {
+            const checkInterval = setInterval(() => {
+              if (selectedProposal && selectedProposal.id) {
+                clearInterval(checkInterval);
+                resolve(null);
+              }
+            }, 100);
+            // Timeout after 2 minutes
+            setTimeout(() => clearInterval(checkInterval), 120000);
+          });
+        }
+      }
 
       // Small cooldown between phases
       await new Promise(r => setTimeout(r, 1500));
@@ -325,6 +479,39 @@ const App: React.FC = () => {
     } catch (e) {
       setProject(p => ({ ...p, isSynthesizing: false }));
       addLog("CRITICAL: Global synthesis pipeline failed.");
+    }
+  };
+
+  const handleConflictResolution = async () => {
+    if (!selectedProposal || conflictingProposals.length === 0) return;
+
+    try {
+      const resolution = await resolveConflictingProposals(
+        conflictingProposals,
+        synthesisStrategy,
+        project.prompt,
+        project.agents
+      );
+
+      // Log resolution
+      addLog(`✅ RESOLVED: ${selectedProposal.agentName} selected via ${synthesisStrategy}`);
+      addLog(`📝 Reasoning: ${resolution.reasoning}`);
+
+      // Store in conflict log
+      setConflictLog(prev => [...prev, {
+        strategy: synthesisStrategy,
+        selectedProposal,
+        alternates: conflictingProposals.filter(p => p.id !== selectedProposal.id),
+        reasoning: resolution.reasoning,
+        mergedArchitecture: resolution.merged || selectedProposal.architecture
+      }]);
+
+      // Close modal
+      setShowConflictResolver(false);
+      setSelectedProposal(undefined);
+      setConflictingProposals([]);
+    } catch (error) {
+      addLog(`❌ RESOLUTION ERROR: ${error}`);
     }
   };
 
@@ -459,22 +646,132 @@ const App: React.FC = () => {
 
                 {/* Main Grid Layout */}
                 <div className="grid grid-cols-12 gap-3 flex-1 overflow-hidden">
-                  {/* Left Column - Strategy & Intensity */}
-                  <div className="col-span-3 space-y-2 overflow-y-auto custom-scrollbar">
-                    <div className="p-3 rounded-lg border bg-gradient-to-br from-indigo-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
+                  {/* Left Column - Engine Config */}
+                  <div className="col-span-2 space-y-2 overflow-y-auto custom-scrollbar">
+                    <div className="p-3 rounded-lg border bg-gradient-to-br from-cyan-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
                       <div className="flex items-center space-x-2 mb-2">
+                        <i className="fa-solid fa-microchip text-cyan-400 text-xs"></i>
+                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Engine Config</h3>
+                      </div>
+                      <div className="space-y-2 text-[8px]">
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Orchestrator Provider</label>
+                          <select 
+                            value={project.orchestratorConfig.provider}
+                            onChange={(e) => setProject(p => ({ ...p, orchestratorConfig: { ...p.orchestratorConfig, provider: e.target.value as AIProvider } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-cyan-500 transition-colors" 
+                            style={{ borderColor: 'var(--border)' }}
+                          >
+                            <option value="google">Gemini</option>
+                            <option value="openai">GPT</option>
+                            <option value="anthropic">Claude</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Synthesis Provider</label>
+                          <select 
+                            value={project.synthesisConfig.provider}
+                            onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, provider: e.target.value as AIProvider } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-cyan-500 transition-colors" 
+                            style={{ borderColor: 'var(--border)' }}
+                          >
+                            <option value="google">Gemini</option>
+                            <option value="openai">GPT</option>
+                            <option value="anthropic">Claude</option>
+                          </select>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1">
+                          <div>
+                            <label className="block font-bold text-slate-400 mb-1">Orch. Depth</label>
+                            <select 
+                              value={project.orchestratorConfig.reasoningDepth || 'standard'}
+                              onChange={(e) => setProject(p => ({ ...p, orchestratorConfig: { ...p.orchestratorConfig, reasoningDepth: e.target.value as any } }))}
+                              className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none text-[7px]" 
+                              style={{ borderColor: 'var(--border)' }}
+                            >
+                              <option value="standard">Standard</option>
+                              <option value="deep">Deep</option>
+                              <option value="exhaustive">Exhaustive</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block font-bold text-slate-400 mb-1">Synth. Depth</label>
+                            <select 
+                              value={project.synthesisConfig.reasoningDepth || 'standard'}
+                              onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, reasoningDepth: e.target.value as any } }))}
+                              className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none text-[7px]" 
+                              style={{ borderColor: 'var(--border)' }}
+                            >
+                              <option value="standard">Standard</option>
+                              <option value="deep">Deep</option>
+                              <option value="exhaustive">Exhaustive</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Center Column - Prompt Input & Strategy Tabs */}
+                  <div className="col-span-7 flex flex-col gap-2 overflow-hidden">
+                    <div className="relative flex-1 flex flex-col rounded-lg border overflow-hidden bg-black/40 shadow-lg" style={{ borderColor: 'var(--border)' }}>
+                      <textarea value={inputPrompt} onChange={e => setInputPrompt(e.target.value)} placeholder="Define your mission..." className="flex-1 bg-transparent p-4 text-[12px] outline-none resize-none leading-relaxed" style={{ color: 'var(--text-bold)' }} />
+                      <div className="absolute top-3 right-3 flex gap-1">
+                        <button className={`p-1.5 rounded-md border transition-all ${project.teamMode === 'ai' ? 'bg-purple-600 border-purple-400 text-white shadow-lg' : 'bg-black/20 border-white/5'}`} onClick={() => setProject(p => ({ ...p, teamMode: 'ai' }))} title="AI Team Mode">
+                          <i className="fa-solid fa-wand-magic-sparkles text-[10px]" />
+                        </button>
+                        <button className={`p-1.5 rounded-md border transition-all ${project.teamMode === 'manual' ? 'bg-purple-600 border-purple-400 text-white shadow-lg' : 'bg-black/20 border-white/5'}`} onClick={() => setProject(p => ({ ...p, teamMode: 'manual' }))} title="Manual Team Mode">
+                          <i className="fa-solid fa-sliders text-[10px]" />
+                        </button>
+                      </div>
+                      <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between gap-2">
+                         <div className="flex gap-1">
+                           <button onClick={() => setProject(p => ({ ...p, enableMediaAssets: !p.enableMediaAssets }))} className={`px-2 py-1 rounded border text-[7px] font-black uppercase transition-all flex items-center ${project.enableMediaAssets ? 'bg-pink-600/10 border-pink-500 text-pink-400 shadow-lg shadow-pink-500/10' : 'bg-white/5 border-white/5 opacity-40 hover:opacity-100'}`}>
+                             <i className={`fa-solid ${project.enableMediaAssets ? 'fa-wand-magic-sparkles' : 'fa-image'} text-[6px] mr-1`} />
+                             Assets
+                           </button>
+                           <button onClick={() => setRalphEnabled(!ralphEnabled)} className={`px-2 py-1 rounded border text-[7px] font-black uppercase transition-all flex items-center ${ralphEnabled ? 'bg-green-600/10 border-green-500 text-green-400 shadow-lg shadow-green-500/10' : 'bg-white/5 border-white/5 opacity-40 hover:opacity-100'}`} title="Enable Ralph Loop: PRD-driven iteration">
+                             <i className={`fa-solid ${ralphEnabled ? 'fa-refresh' : 'fa-redo'} text-[6px] mr-1`} />
+                             Ralph
+                           </button>
+                         </div>
+                         <button onClick={ralphEnabled ? () => runRalphLoopHandler(prdItems.length > 0 ? prdItems : parsePRDItems(inputPrompt)) : startOrchestration} disabled={project.isOrchestrating || isRalphRunning || !inputPrompt.trim()} className="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-black px-4 py-1 rounded-md shadow-lg transition-all active:scale-95 uppercase tracking-widest text-[7px] disabled:opacity-30 border-b-2 border-black/20 flex items-center space-x-1">
+                           <span>{ralphEnabled ? 'Ralph Loop' : 'Engage'}</span>
+                           <i className={`fa-solid ${ralphEnabled ? 'fa-rotate-right' : 'fa-bolt-lightning'} text-[6px]`} />
+                         </button>
+                       </div>
+                    </div>
+
+                    <div className="p-2 rounded-lg border bg-gradient-to-br from-indigo-600/10 to-transparent shadow-lg" style={{ borderColor: 'var(--border)' }}>
+                      <div className="flex items-center space-x-1 mb-2">
                         <i className="fa-solid fa-chess text-indigo-400 text-xs"></i>
                         <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Strategy</h3>
                       </div>
-                      <div className="space-y-1">
+                      <div className="grid grid-cols-4 gap-1">
                         {STRATEGY_PRESETS.map(p => (
-                          <button key={p.id} onClick={() => setStrategy(p.id)} className={`w-full p-1.5 rounded-md border text-left transition-all text-[8px] ${strategy === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 hover:border-white/10'}`}>
-                            <div className="flex items-center space-x-1">
+                          <button key={p.id} onClick={() => setStrategy(p.id)} className={`p-1.5 rounded-md border transition-all text-[7px] font-bold uppercase text-center ${strategy === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 hover:border-white/10 text-slate-300'}`}>
+                            <div className="flex flex-col items-center space-y-0.5">
                               <i className={`fa-solid fa-${p.icon} text-[8px]`} />
-                              <div className="overflow-hidden flex-1">
-                                <div className="text-[8px] font-bold uppercase">{p.label}</div>
-                              </div>
+                              <div className="leading-tight">{p.label}</div>
                             </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column - Deploy, Intensity, Team Mode */}
+                  <div className="col-span-3 space-y-2 overflow-y-auto custom-scrollbar">
+                    <div className="p-3 rounded-lg border bg-gradient-to-br from-pink-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
+                      <div className="flex items-center space-x-2 mb-2">
+                        <i className="fa-solid fa-rocket text-pink-400 text-xs"></i>
+                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Deploy</h3>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1">
+                        {PLATFORMS.map(p => (
+                          <button key={p.id} onClick={() => setTargetPlatform(p.id)} className={`p-1 rounded-md border flex flex-col items-center space-y-0.5 transition-all text-[6px] font-black uppercase ${targetPlatform === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 opacity-50 hover:opacity-100'}`}>
+                            <i className={`fa-solid fa-${p.icon} text-[7px]`} />
+                            <span className="leading-tight text-center">{p.label}</span>
                           </button>
                         ))}
                       </div>
@@ -495,70 +792,29 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   </div>
-
-                  {/* Center Column - Prompt Input */}
-                  <div className="col-span-6 flex flex-col overflow-hidden">
-                    <div className="relative h-full flex flex-col rounded-lg border overflow-hidden bg-black/40 shadow-lg" style={{ borderColor: 'var(--border)' }}>
-                      <textarea value={inputPrompt} onChange={e => setInputPrompt(e.target.value)} placeholder="Define your mission..." className="flex-1 bg-transparent p-4 text-[12px] outline-none resize-none leading-relaxed" style={{ color: 'var(--text-bold)' }} />
-                      <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between gap-2">
-                        <button onClick={() => setProject(p => ({ ...p, enableMediaAssets: !p.enableMediaAssets }))} className={`px-2 py-1 rounded border text-[7px] font-black uppercase transition-all flex items-center ${project.enableMediaAssets ? 'bg-pink-600/10 border-pink-500 text-pink-400 shadow-lg shadow-pink-500/10' : 'bg-white/5 border-white/5 opacity-40 hover:opacity-100'}`}>
-                          <i className={`fa-solid ${project.enableMediaAssets ? 'fa-wand-magic-sparkles' : 'fa-image'} text-[6px] mr-1`} />
-                          Assets
-                        </button>
-                        <button onClick={startOrchestration} disabled={project.isOrchestrating || !inputPrompt.trim()} className="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-black px-4 py-1 rounded-md shadow-lg transition-all active:scale-95 uppercase tracking-widest text-[7px] disabled:opacity-30 border-b-2 border-black/20 flex items-center space-x-1">
-                          <span>Engage</span>
-                          <i className="fa-solid fa-bolt-lightning text-[6px]" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right Column - Team Mode & Deployment */}
-                  <div className="col-span-3 space-y-2 overflow-y-auto custom-scrollbar">
-                    <div className="p-3 rounded-lg border bg-gradient-to-br from-purple-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
-                      <div className="flex items-center space-x-2 mb-2">
-                        <i className="fa-solid fa-layer-group text-purple-400 text-xs"></i>
-                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Team</h3>
-                      </div>
-                      <div className="flex gap-1">
-                        {['ai', 'manual'].map(m => (
-                          <button key={m} onClick={() => setProject(p => ({ ...p, teamMode: m as TeamMode }))} className={`flex-1 px-2 py-1 rounded-md border text-[7px] font-black uppercase transition-all ${project.teamMode === m ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5'}`}>
-                            {m === 'ai' ? 'Auto' : 'Arch'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="p-3 rounded-lg border bg-gradient-to-br from-pink-600/10 to-transparent shadow-lg shrink-0" style={{ borderColor: 'var(--border)' }}>
-                      <div className="flex items-center space-x-2 mb-2">
-                        <i className="fa-solid fa-rocket text-pink-400 text-xs"></i>
-                        <h3 className="text-[9px] font-black uppercase tracking-widest text-white">Deploy</h3>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1">
-                        {PLATFORMS.map(p => (
-                          <button key={p.id} onClick={() => setTargetPlatform(p.id)} className={`p-1 rounded-md border flex flex-col items-center space-y-0.5 transition-all text-[6px] font-black uppercase ${targetPlatform === p.id ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-black/20 border-white/5 opacity-50 hover:opacity-100'}`}>
-                            <i className={`fa-solid fa-${p.icon} text-[7px]`} />
-                            <span className="leading-tight text-center">{p.label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
                 </div>
 
-                {/* Manual Team Selection */}
-                {project.teamMode === 'manual' && (
-                  <div className="mt-6 p-5 rounded-xl border bg-black/20 shadow-lg" style={{ borderColor: 'var(--border)' }}>
-                     <div className="flex items-center space-x-2 mb-4">
+                {/* Collapsible Target Nodes Section */}
+                <div className="mt-6 rounded-xl border bg-black/20 shadow-lg overflow-hidden transition-all" style={{ borderColor: 'var(--border)' }}>
+                   <button 
+                     onClick={() => setIsTargetNodesCollapsed(!isTargetNodesCollapsed)}
+                     className="w-full flex items-center justify-between p-5 hover:bg-white/5 transition-colors"
+                   >
+                     <div className="flex items-center space-x-2">
                        <i className="fa-solid fa-tower-broadcast text-cyan-400"></i>
                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white">Target Nodes</h3>
                      </div>
-                     <div className="overflow-y-auto custom-scrollbar space-y-1 pr-1 max-h-48">{Object.entries(groupedRegistry).map(([cat, agents]) => (
-                       <div key={cat} className="space-y-1"><button onClick={() => setExpandedSectors(p => p.includes(cat) ? p.filter(s => s !== cat) : [...p, cat])} className="w-full flex items-center justify-between p-2 text-[9px] font-black uppercase text-indigo-400/80 hover:bg-white/5 rounded-md"><span>{cat}</span><i className={`fa-solid fa-chevron-down text-[7px] transition-transform ${expandedSectors.includes(cat) ? '' : '-rotate-90'}`}></i></button>
-                       {expandedSectors.includes(cat) && agents.map(a => (<button key={a.id} onClick={() => setSelectedIds(p => p.includes(a.id) ? p.filter(i => i !== a.id) : [...p, a.id])} className={`w-full p-2 rounded-md border text-left flex items-center justify-between transition-all text-[8px] ${selectedIds.includes(a.id) ? 'bg-indigo-600 border-indigo-400 text-white shadow-md' : 'bg-black/20 border-white/5 text-slate-400'}`}><span className="font-bold uppercase truncate">{a.name}</span>{selectedIds.includes(a.id) && <i className="fa-solid fa-check text-[8px]" />}</button>))}</div>
-                     ))}</div>
-                  </div>
-               )}
+                     <i className={`fa-solid fa-chevron-down text-[10px] transition-transform duration-300 ${isTargetNodesCollapsed ? '-rotate-90' : ''}`} style={{ color: 'var(--accent)' }}></i>
+                   </button>
+                   {!isTargetNodesCollapsed && (
+                     <div className="px-5 pb-5 pt-0">
+                       <div className="overflow-y-auto custom-scrollbar space-y-1 pr-1 max-h-48">{Object.entries(groupedRegistry).map(([cat, agents]) => (
+                         <div key={cat} className="space-y-1"><button onClick={() => setExpandedSectors(p => p.includes(cat) ? p.filter(s => s !== cat) : [...p, cat])} className="w-full flex items-center justify-between p-2 text-[9px] font-black uppercase text-indigo-400/80 hover:bg-white/5 rounded-md"><span>{cat}</span><i className={`fa-solid fa-chevron-down text-[7px] transition-transform ${expandedSectors.includes(cat) ? '' : '-rotate-90'}`}></i></button>
+                         {expandedSectors.includes(cat) && agents.map(a => (<button key={a.id} onClick={() => setSelectedIds(p => p.includes(a.id) ? p.filter(i => i !== a.id) : [...p, a.id])} className={`w-full p-2 rounded-md border text-left flex items-center justify-between transition-all text-[8px] ${selectedIds.includes(a.id) ? 'bg-indigo-600 border-indigo-400 text-white shadow-md' : 'bg-black/20 border-white/5 text-slate-400'}`}><span className="font-bold uppercase truncate">{a.name}</span>{selectedIds.includes(a.id) && <i className="fa-solid fa-check text-[8px]" />}</button>))}</div>
+                       ))}</div>
+                     </div>
+                   )}
+                </div>
 
                </div>
             )}
@@ -579,7 +835,7 @@ const App: React.FC = () => {
                         <div><h4 className="text-[9px] font-black uppercase text-slate-500 mb-2 tracking-widest">Technical Data</h4><div className="p-4 bg-slate-900 border rounded-xl font-mono text-[10px] whitespace-pre-wrap leading-relaxed shadow-inner text-slate-300" style={{ borderColor: 'var(--border)' }}>{activeAgent.output || "Awaiting signal stream..."}</div></div>
                      </div>
                   </div>
-                ) : <AgentList agents={project.agents} phases={project.phases} onSelectAgent={handleSelectAgent} activeAgentId={selectedAgentId} />}
+                ) : <AgentList agents={project.agents} phases={project.phases} onSelectAgent={handleSelectAgent} activeAgentId={selectedAgentId} onEditAgent={(agent) => { setEditingAgent(agent); setAgentEditorOpen(true); }} />}
              </div>
           </div>
         </div>
@@ -663,42 +919,197 @@ const App: React.FC = () => {
                )}
 
                {terminalTab === 'settings' && (
-                 <div className="h-full overflow-y-auto space-y-8 p-2 animate-fade-in custom-scrollbar">
-                    <div className="grid grid-cols-2 gap-10">
-                       <div className="space-y-6">
-                          <div className="space-y-2">
-                             <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Terminal Theme Engine</span><span className="uppercase font-bold" style={{ color: 'var(--accent)' }}>{activeTheme}</span></div>
-                             <div className="grid grid-cols-4 gap-2">
-                               {Object.keys(GLOBAL_THEMES).map(t => (
-                                 <button key={t} onClick={() => setActiveTheme(t as keyof typeof GLOBAL_THEMES)} className={`px-2 py-1 rounded border text-[8px] uppercase font-black transition-all ${activeTheme === t ? 'bg-indigo-600 border-indigo-400 text-white' : 'bg-black/40 border-white/5 opacity-40 hover:opacity-100'}`}>{t}</button>
-                               ))}
-                             </div>
-                          </div>
-                          <div className="space-y-2">
-                             <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Font Dimension</span><span className="font-bold" style={{ color: 'var(--accent)' }}>{terminalFontSize}px</span></div>
-                             <input type="range" min="8" max="18" value={terminalFontSize} onChange={e => setTerminalFontSize(parseInt(e.target.value))} className="w-full accent-indigo-500" />
-                          </div>
-                       </div>
-                       <div className="space-y-6">
-                          <div className="space-y-2">
-                             <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Panel Opacity</span><span className="font-bold" style={{ color: 'var(--accent)' }}>{Math.round(terminalOpacity * 100)}%</span></div>
-                             <input type="range" min="0.5" max="1" step="0.01" value={terminalOpacity} onChange={e => setTerminalOpacity(parseFloat(e.target.value))} className="w-full accent-indigo-500" />
-                          </div>
-                          <div className="grid grid-cols-2 gap-4 pt-2">
-                             <label className="flex items-center space-x-3 cursor-pointer group">
-                                <div onClick={() => setTerminalBlinkingCursor(!terminalBlinkingCursor)} className={`w-9 h-4.5 rounded-full relative transition-all ${terminalBlinkingCursor ? 'bg-indigo-600 shadow-[0_0_8px_var(--accent)]' : 'bg-slate-800'}`}>
-                                   <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all ${terminalBlinkingCursor ? 'right-0.5' : 'left-0.5'}`} />
-                                </div>
-                                <span className="text-[9px] font-black uppercase opacity-60 group-hover:opacity-100">Blinking Pulse</span>
-                             </label>
-                             <label className="flex items-center space-x-3 cursor-pointer group">
-                                <div onClick={() => setTerminalShowTimestamp(!terminalShowTimestamp)} className={`w-9 h-4.5 rounded-full relative transition-all ${terminalShowTimestamp ? 'bg-indigo-600 shadow-[0_0_8px_var(--accent)]' : 'bg-slate-800'}`}>
-                                   <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all ${terminalShowTimestamp ? 'right-0.5' : 'left-0.5'}`} />
-                                </div>
-                                <span className="text-[9px] font-black uppercase opacity-60 group-hover:opacity-100">Temp Stamps</span>
-                             </label>
-                          </div>
-                       </div>
+                 <div className="h-full overflow-y-auto space-y-4 p-4 animate-fade-in custom-scrollbar">
+                    {/* AI ENGINE CONFIGURATIONS */}
+                    <div className="border rounded-lg p-4 bg-black/20" style={{ borderColor: 'var(--border)' }}>
+                      <h4 className="text-[9px] font-black uppercase tracking-widest mb-3 text-cyan-400">Orchestrator Config</h4>
+                      <div className="grid grid-cols-2 gap-3 text-[8px] space-y-2">
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Provider</label>
+                          <select 
+                            value={project.orchestratorConfig.provider}
+                            onChange={(e) => setProject(p => ({ ...p, orchestratorConfig: { ...p.orchestratorConfig, provider: e.target.value as AIProvider } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-cyan-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          >
+                            <option value="google">Gemini</option>
+                            <option value="openai">GPT</option>
+                            <option value="anthropic">Claude</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Model</label>
+                          <input 
+                            type="text" 
+                            value={project.orchestratorConfig.model}
+                            onChange={(e) => setProject(p => ({ ...p, orchestratorConfig: { ...p.orchestratorConfig, model: e.target.value } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-cyan-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                            placeholder="gemini-3-pro-preview"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Max Tokens</label>
+                          <input 
+                            type="number" 
+                            value={project.orchestratorConfig.maxTokens}
+                            onChange={(e) => setProject(p => ({ ...p, orchestratorConfig: { ...p.orchestratorConfig, maxTokens: parseInt(e.target.value) } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-cyan-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Top P</label>
+                          <input 
+                            type="number" 
+                            min="0" max="1" step="0.1"
+                            value={project.orchestratorConfig.topP}
+                            onChange={(e) => setProject(p => ({ ...p, orchestratorConfig: { ...p.orchestratorConfig, topP: parseFloat(e.target.value) } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-cyan-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <label className="block font-bold text-slate-400 mb-1">Reasoning Depth</label>
+                          <select 
+                            value={project.orchestratorConfig.reasoningDepth || 'standard'}
+                            onChange={(e) => setProject(p => ({ ...p, orchestratorConfig: { ...p.orchestratorConfig, reasoningDepth: e.target.value as any } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-cyan-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          >
+                            <option value="standard">Standard</option>
+                            <option value="deep">Deep</option>
+                            <option value="exhaustive">Exhaustive</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="border rounded-lg p-4 bg-black/20" style={{ borderColor: 'var(--border)' }}>
+                      <h4 className="text-[9px] font-black uppercase tracking-widest mb-3 text-pink-400">Synthesis Config</h4>
+                      <div className="grid grid-cols-2 gap-3 text-[8px] space-y-2">
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Provider</label>
+                          <select 
+                            value={project.synthesisConfig.provider}
+                            onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, provider: e.target.value as AIProvider } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-pink-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          >
+                            <option value="google">Gemini</option>
+                            <option value="openai">GPT</option>
+                            <option value="anthropic">Claude</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Model</label>
+                          <input 
+                            type="text" 
+                            value={project.synthesisConfig.model}
+                            onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, model: e.target.value } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-pink-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                            placeholder="gemini-3-pro-preview"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Max Tokens</label>
+                          <input 
+                            type="number" 
+                            value={project.synthesisConfig.maxTokens}
+                            onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, maxTokens: parseInt(e.target.value) } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-pink-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-400 mb-1">Top P</label>
+                          <input 
+                            type="number" 
+                            min="0" max="1" step="0.1"
+                            value={project.synthesisConfig.topP}
+                            onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, topP: parseFloat(e.target.value) } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-pink-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <label className="block font-bold text-slate-400 mb-1">Reasoning Depth</label>
+                          <select 
+                            value={project.synthesisConfig.reasoningDepth || 'standard'}
+                            onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, reasoningDepth: e.target.value as any } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-pink-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          >
+                            <option value="standard">Standard</option>
+                            <option value="deep">Deep</option>
+                            <option value="exhaustive">Exhaustive</option>
+                          </select>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="flex items-center space-x-2 cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              checked={project.synthesisConfig.recursiveRefinement || false}
+                              onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, recursiveRefinement: e.target.checked } }))}
+                              className="w-4 h-4"
+                            />
+                            <span className="font-bold text-slate-400">Recursive Refinement</span>
+                          </label>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="block font-bold text-slate-400 mb-1">Refinement Passes</label>
+                          <input 
+                            type="number" 
+                            min="1" max="5"
+                            value={project.synthesisConfig.refinementPasses || 1}
+                            onChange={(e) => setProject(p => ({ ...p, synthesisConfig: { ...p.synthesisConfig, refinementPasses: parseInt(e.target.value) } }))}
+                            className="w-full bg-slate-900 border rounded-md px-2 py-1 outline-none focus:border-pink-500" 
+                            style={{ borderColor: 'var(--border)' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* TERMINAL SETTINGS */}
+                    <div className="border rounded-lg p-4 bg-black/20" style={{ borderColor: 'var(--border)' }}>
+                      <h4 className="text-[9px] font-black uppercase tracking-widest mb-3 text-indigo-400">Terminal Settings</h4>
+                      <div className="grid grid-cols-2 gap-10">
+                         <div className="space-y-6">
+                            <div className="space-y-2">
+                               <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Theme Engine</span><span className="uppercase font-bold" style={{ color: 'var(--accent)' }}>{activeTheme}</span></div>
+                               <div className="grid grid-cols-4 gap-2">
+                                 {Object.keys(GLOBAL_THEMES).map(t => (
+                                   <button key={t} onClick={() => setActiveTheme(t as keyof typeof GLOBAL_THEMES)} className={`px-2 py-1 rounded border text-[8px] uppercase font-black transition-all ${activeTheme === t ? 'bg-indigo-600 border-indigo-400 text-white' : 'bg-black/40 border-white/5 opacity-40 hover:opacity-100'}`}>{t}</button>
+                                 ))}
+                               </div>
+                            </div>
+                            <div className="space-y-2">
+                               <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Font Dimension</span><span className="font-bold" style={{ color: 'var(--accent)' }}>{terminalFontSize}px</span></div>
+                               <input type="range" min="8" max="18" value={terminalFontSize} onChange={e => setTerminalFontSize(parseInt(e.target.value))} className="w-full accent-indigo-500" />
+                            </div>
+                         </div>
+                         <div className="space-y-6">
+                            <div className="space-y-2">
+                               <div className="flex justify-between text-[9px] uppercase font-black opacity-50"><span>Panel Opacity</span><span className="font-bold" style={{ color: 'var(--accent)' }}>{Math.round(terminalOpacity * 100)}%</span></div>
+                               <input type="range" min="0.5" max="1" step="0.01" value={terminalOpacity} onChange={e => setTerminalOpacity(parseFloat(e.target.value))} className="w-full accent-indigo-500" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 pt-2">
+                               <label className="flex items-center space-x-3 cursor-pointer group">
+                                  <div onClick={() => setTerminalBlinkingCursor(!terminalBlinkingCursor)} className={`w-9 h-4.5 rounded-full relative transition-all ${terminalBlinkingCursor ? 'bg-indigo-600 shadow-[0_0_8px_var(--accent)]' : 'bg-slate-800'}`}>
+                                     <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all ${terminalBlinkingCursor ? 'right-0.5' : 'left-0.5'}`} />
+                                  </div>
+                                  <span className="text-[9px] font-black uppercase opacity-60 group-hover:opacity-100">Blinking Pulse</span>
+                               </label>
+                               <label className="flex items-center space-x-3 cursor-pointer group">
+                                  <div onClick={() => setTerminalShowTimestamp(!terminalShowTimestamp)} className={`w-9 h-4.5 rounded-full relative transition-all ${terminalShowTimestamp ? 'bg-indigo-600 shadow-[0_0_8px_var(--accent)]' : 'bg-slate-800'}`}>
+                                     <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all ${terminalShowTimestamp ? 'right-0.5' : 'left-0.5'}`} />
+                                  </div>
+                                  <span className="text-[9px] font-black uppercase opacity-60 group-hover:opacity-100">Temp Stamps</span>
+                               </label>
+                            </div>
+                         </div>
+                      </div>
                     </div>
                  </div>
                )}
@@ -763,6 +1174,68 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Phase 1: Conflict Resolver Modal */}
+        <ConflictResolver
+          isOpen={showConflictResolver}
+          proposals={conflictingProposals}
+          selectedProposal={selectedProposal}
+          resolution={resolutionReasoning}
+          onSelectProposal={setSelectedProposal}
+          onClose={() => {
+            setShowConflictResolver(false);
+            setSelectedProposal(undefined);
+            setConflictingProposals([]);
+          }}
+          onConfirm={handleConflictResolution}
+        />
+
+        {/* Phase 1: Cost Tracker Dashboard */}
+         {costMetrics.length > 0 && (
+           <div className="absolute bottom-24 right-6 z-40 max-w-sm">
+             <CostTracker metrics={costMetrics} budgetUSD={costBudgetUSD} />
+           </div>
+         )}
+
+        {/* Phase 5: Ralph Loop Panel */}
+        {ralphEnabled && (
+          <div className="absolute top-20 right-6 z-40 max-w-lg max-h-96 overflow-y-auto custom-scrollbar">
+            <RalphLoopPanel
+              prdItems={prdItems}
+              isRunning={isRalphRunning}
+              currentIteration={ralphIteration}
+              maxIterations={ralphMaxIterations}
+              completionRate={ralphCompletionRate}
+              checkpoints={ralphCheckpoints}
+              onStartRalphLoop={runRalphLoopHandler}
+              onLoadCheckpoint={handleLoadRalphCheckpoint}
+              onExportCheckpoints={handleExportRalphCheckpoints}
+            />
+          </div>
+        )}
+
+        {/* Agent Editor Modal */}
+        <AgentEditor
+          isOpen={agentEditorOpen}
+          agent={editingAgent}
+          onClose={() => {
+            setAgentEditorOpen(false);
+            setEditingAgent(null);
+          }}
+          onSave={(updatedAgent) => {
+            setRegistry(prev =>
+              prev.map(a => a.id === updatedAgent.id ? updatedAgent : a)
+            );
+            if (project.agents.some(a => a.id === updatedAgent.id)) {
+              setProject(prev => ({
+                ...prev,
+                agents: prev.agents.map(a => a.id === updatedAgent.id ? updatedAgent : a)
+              }));
+            }
+            setAgentEditorOpen(false);
+            setEditingAgent(null);
+          }}
+        />
       </main>
     </div>
   );

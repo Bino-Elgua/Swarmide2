@@ -230,6 +230,22 @@ export interface Agent {
   riskAversion: number;
   selectionReason?: string;
   isDefault: boolean;
+  apiKeys?: Record<string, string>; // service: apiKey mapping
+  modelParams?: {
+    temperature?: number;
+    topP?: number;
+    topK?: number;
+    maxTokens?: number;
+    recursiveRefinement?: boolean;
+  };
+  executionParams?: {
+    timeoutMs?: number;
+    retries?: number;
+    priority?: number;
+    parallelizable?: boolean;
+  };
+  phaseDependencies?: string[];
+  specialization?: string[];
 }
 
 export interface Phase {
@@ -284,4 +300,92 @@ export interface OrchestrationResponse {
 
 export interface SynthesisResponse {
   files: FileEntry[];
+}
+
+// Phase 1: Conflict Resolution Types
+export interface ProposalOutput {
+  id: string;
+  agentId: string;
+  agentName: string;
+  architecture: string;
+  rationale: string;
+  tradeoffs: {
+    pro: string[];
+    con: string[];
+  };
+  confidence: number;
+  dependencies: string[];
+  risks: string[];
+  costEstimate?: number;
+}
+
+export interface ConflictResolution {
+  strategy: 'voting' | 'hierarchical' | 'debate' | 'meta_reasoning' | 'user_select';
+  selectedProposal: ProposalOutput;
+  alternates: ProposalOutput[];
+  reasoning: string;
+  mergedArchitecture: string;
+}
+
+// Phase 2: Cost Tracking Types
+export interface CostMetrics {
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+  timestamp: Date;
+  agentName?: string;
+  phaseNumber?: number;
+}
+
+// Phase 2: RLM Context Compression Types
+export interface ContextSnapshot {
+  id: string;
+  phaseNumber: number;
+  timestamp: Date;
+  architectureDecisions: string;
+  implementationPatterns: string;
+  constraints: string[];
+  openIssues: string[];
+  originalTokenCount: number;
+  compressedTokenCount: number;
+  stateSummary: string;
+  queryIndex: Map<string, string>;
+  topicalIndex: Map<string, string[]>;
+  costBreakdown: Record<string, number>;
+}
+
+export interface RLMQuery {
+  topic: string;
+  keywords: string[];
+  maxTokens?: number;
+}
+
+export interface RLMQueryResult {
+  relevant_context: string;
+  confidence: number;
+  source_phase: number;
+  tokens_used: number;
+}
+
+export interface CompressionMetrics {
+  originalTokens: number;
+  compressedTokens: number;
+  reductionPercent: number;
+  tokensSaved: number;
+  estimatedCostSaved: number;
+  compressionRatio: number;
+}
+
+// Extended ProjectState
+export interface ProjectStateExtended extends ProjectState {
+  proposalHistory: ProposalOutput[];
+  conflictLog: ConflictResolution[];
+  costMetrics: CostMetrics[];
+  costBudgetUSD?: number;
+  costActualUSD?: number;
+  synthesisStrategy: 'voting' | 'hierarchical' | 'debate' | 'meta_reasoning' | 'user_select';
+  rlmEnabled?: boolean;
+  currentSnapshot?: ContextSnapshot;
+  compressionMetrics?: CompressionMetrics;
 }
