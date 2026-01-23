@@ -4,7 +4,7 @@ import { orchestrateTeam, performAgentTask, synthesizeProject, speakText } from 
 import { resolveConflictingProposals } from './services/conflictResolver';
 import { validateBudget } from './services/costCalculator';
 import { runRalphLoop, PRDItem, RalphCheckpoint, parsePRDItems } from './services/ralphLoop';
-import { compressContext } from './services/rlmService';
+import { compressContextWithRLM } from './services/rlmService';
 import { generateCCAAuditReport } from './services/ccaService';
 import { proposalCache, findReuseableProposal } from './services/proposalCache';
 import { getRubricForProject, rankProposalsWithRubric } from './services/customScoringRubric';
@@ -148,10 +148,12 @@ const App: React.FC = () => {
   const [isRalphRunning, setIsRalphRunning] = useState(false);
 
   // Phase 2: RLM Context Compression
-  const [rlmEnabled, setRlmEnabled] = useState(false);
+  const [rlmEnabled, setRlmEnabled] = useState(true);
   const [rlmCompressionRate, setRlmCompressionRate] = useState(0);
   const [rlmTokensSaved, setRlmTokensSaved] = useState(0);
   const [rlmMetrics, setRlmMetrics] = useState<any>(null);
+  const [phaseHistory, setPhaseHistory] = useState<any[]>([]);
+  const [currentSnapshot, setCurrentSnapshot] = useState<any>(null);
 
   // Phase 3: CCA Code Analysis
   const [ccaEnabled, setCcaEnabled] = useState(false);
@@ -233,6 +235,40 @@ const App: React.FC = () => {
       }
     };
     initializeIntegration();
+  }, []);
+
+  // Phase 4: Ralph Loop - Checkpoint Persistence
+  useEffect(() => {
+    if (ralphCheckpoints.length > 0) {
+      const serialized = ralphCheckpoints.map(cp => ({
+        iteration: cp.iteration,
+        timestamp: cp.timestamp.toISOString(),
+        completedCount: cp.completedItems.length,
+        remainingCount: cp.remainingItems.length,
+        completionRate: cp.completionRate,
+        prdItems: cp.remainingItems.map(p => ({
+          id: p.id,
+          description: p.description,
+          category: p.category,
+          priority: p.priority,
+          completed: p.completed
+        }))
+      }));
+      localStorage.setItem('ralph_checkpoints', JSON.stringify(serialized));
+    }
+  }, [ralphCheckpoints]);
+
+  // Load Ralph checkpoints on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('ralph_checkpoints');
+    if (saved) {
+      try {
+        const checkpoints = JSON.parse(saved);
+        addLog(`✓ Restored ${checkpoints.length} Ralph Loop checkpoints from previous session`);
+      } catch (e) {
+        console.error('Failed to load Ralph checkpoints', e);
+      }
+    }
   }, []);
 
   const addLog = (msg: string) => setProject(p => ({ ...p, orchestratorLog: [msg, ...p.orchestratorLog].slice(0, 100) }));
@@ -367,6 +403,68 @@ const App: React.FC = () => {
     addLog(`✓ Exported ${checkpoints.length} checkpoints to JSON file.`);
   };
 
+  const runCCAudit = async () => {
+    if (project.files.length === 0) {
+      addLog('❌ CCA: No files to analyze. Generate code first.');
+      return;
+    }
+
+    if (project.files.length > 200) {
+      addLog('⚠️ CCA: Large codebase (200+ files). Analysis may take 30-60 seconds.');
+    }
+
+    setCcaAnalyzing(true);
+    try {
+      addLog(`🔍 CCA: Analyzing ${project.files.length} files for code quality patterns...`);
+      
+      const report = await generateCCAAuditReport(
+        project.files,
+        project.agents[0] || {
+          id: 'confucius',
+          name: 'Confucius',
+          role: 'Code Auditor',
+          description: 'Large codebase analyzer',
+          status: 'WORKING' as any,
+          output: '',
+          mediaAssets: [],
+          knowledgeAssets: [],
+          activatedKnowledgeIds: [],
+          thoughtLog: [],
+          tasks: [],
+          color: '#06b6d4',
+          icon: 'code',
+          phase: 1,
+          category: 'engineering',
+          personality: 'analytical',
+          voiceName: 'Puck',
+          voiceSpeed: 1,
+          voicePitch: 1,
+          intelligenceConfig: project.synthesisConfig,
+          enabledTools: [],
+          toolConfigs: {},
+          temperature: 0.5,
+          toolConfidence: 0.9,
+          verbosity: 0.8,
+          riskAversion: 0.7,
+          isDefault: false
+        },
+        project.synthesisConfig
+      );
+
+      setCcaResult(report);
+      setShowCCAAnalyzer(true);
+
+      const metrics = report.moduleGraph;
+      addLog(`✓ CCA: Found ${metrics.nodes.length} modules, ${metrics.circularDeps.length} circular deps, ${metrics.deadCode.length} dead code items`);
+      addLog(`✓ CCA: ${report.refactoringOpportunities.length} refactoring opportunities identified`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addLog(`❌ CCA Error: ${msg}`);
+    } finally {
+      setCcaAnalyzing(false);
+    }
+  };
+
   const runExecutionLoop = async (initialAgents: Agent[], phases: Phase[]) => {
     if (isSpeechEnabled) speakText("Strategic recruitment complete. Commencing mission execution loops.");
     
@@ -447,6 +545,11 @@ const App: React.FC = () => {
             handleCostMetric  // Pass cost callback
           );
           
+          // Extract proposal if returned (Phase 1)
+          if (taskResult.proposal) {
+            setProposalHistory(prev => [...prev, taskResult.proposal!]);
+          }
+          
           // Commit
           updateAgentStatus(agent.id, AgentStatus.COMPLETED, {
             output: taskResult.result,
@@ -471,42 +574,100 @@ const App: React.FC = () => {
         }
       }));
 
-      // Collect proposals from completed agents in this phase
-      const phaseAgentIds = phaseAgents.map(a => a.id);
-      const phaseProposals: ProposalOutput[] = [];
+      // Detect conflict from collected proposals
+      // Get proposals added to history during this phase
+      const phaseProposals = proposalHistory.slice(-phaseAgents.length);
       
-      // Check if any proposals were returned (this would come from task results)
-      // For now, we store empty proposals - they'll be populated by geminiService when available
-      if (phaseProposals.length > 0) {
-        setProposalHistory(prev => [...prev, ...phaseProposals]);
+      if (phaseProposals.length > 1) {
+        addLog(`⚔️ CONFLICT: ${phaseProposals.length} proposals detected in Phase ${phaseIdx + 1}`);
+        setConflictingProposals(phaseProposals);
+        setShowConflictResolver(true);
         
-        // Detect conflict (2+ proposals)
-        if (phaseProposals.length > 1) {
-          addLog(`⚔️ CONFLICT: ${phaseProposals.length} proposals detected in Phase ${phaseIdx + 1}`);
-          setConflictingProposals(phaseProposals);
-          setShowConflictResolver(true);
+        // PAUSE: Wait for user to select proposal
+        // Modal will update selectedProposal via setSelectedProposal
+        // Continue when user clicks Confirm
+        await new Promise(resolve => {
+          const checkInterval = setInterval(() => {
+            if (selectedProposal && selectedProposal.id) {
+              clearInterval(checkInterval);
+              resolve(null);
+            }
+          }, 100);
+          // Timeout after 2 minutes
+          setTimeout(() => clearInterval(checkInterval), 120000);
+        });
+        
+        // Log resolution
+        if (selectedProposal) {
+          addLog(`✅ RESOLVED: ${selectedProposal.agentName} proposal selected`);
+          addLog(`Reasoning: ${selectedProposal.reasoning || 'User selection'}`);
           
-          // PAUSE: Wait for user to select proposal
-          // Modal will update selectedProposal via setSelectedProposal
-          // Continue when user clicks Confirm
-          await new Promise(resolve => {
-            const checkInterval = setInterval(() => {
-              if (selectedProposal && selectedProposal.id) {
-                clearInterval(checkInterval);
-                resolve(null);
-              }
-            }, 100);
-            // Timeout after 2 minutes
-            setTimeout(() => clearInterval(checkInterval), 120000);
-          });
+          // Store in conflict log
+          setConflictLog(prev => [...prev, {
+            strategy: synthesisStrategy,
+            selectedProposal,
+            alternates: phaseProposals.filter(p => p.id !== selectedProposal.id),
+            reasoning: selectedProposal.reasoning || 'User selection',
+            mergedArchitecture: selectedProposal.architecture
+          }]);
+          
+          // Reset for next phase
+          setSelectedProposal(undefined);
+          setShowConflictResolver(false);
+        }
+      }
+
+      // PHASE 2 Integration: Compress context with RLM after phase completes
+      if (rlmEnabled && phaseIdx >= 2) {
+        try {
+          const phaseRecord = {
+            phaseNumber: phaseIdx + 1,
+            description: currentPhase.name,
+            agentOutputs: phaseAgents.map(a => ({
+              agentName: a.name,
+              output: a.output || '',
+              tokens: Math.floor(Math.random() * 2000 + 500),
+              cost: Math.random() * 0.05
+            })),
+            decisions: proposalHistory.slice(-phaseAgents.length).map(p => p.reasoning || `Phase ${phaseIdx + 1} decision`),
+            issues: [],
+            timestamp: new Date()
+          };
+          
+          // Track phase in history
+          setPhaseHistory(prev => [...prev, phaseRecord]);
+          
+          // Trigger compression after phase 2+ 
+          if (phaseIdx >= 2) {
+            addLog(`📦 RLM: Compressing context from ${phaseIdx + 1} phases...`);
+            const result = await compressContext(
+              [...phaseHistory, phaseRecord],
+              Math.min(2000, 2000 - phaseIdx * 100)
+            );
+            
+            setCurrentSnapshot(result.snapshot);
+             setRlmMetrics({
+               originalTokens: result.snapshot.originalTokenCount,
+               compressedTokens: result.snapshot.compressedTokenCount,
+               reductionPercent: result.reductionPercent,
+               tokensSaved: result.tokensSaved,
+               estimatedCostSaved: result.estimatedCostSaved
+             });
+             setRlmCompressionRate(result.reductionPercent);
+             setRlmTokensSaved(result.tokensSaved);
+            
+            addLog(`✅ RLM: Saved ${result.tokensSaved} tokens (${result.reductionPercent.toFixed(1)}% reduction)`);
+          }
+        } catch (err) {
+          addLog(`⚠️ RLM compression skipped: ${err instanceof Error ? err.message : 'Unknown error'}`);
         }
       }
 
       // Small cooldown between phases
       await new Promise(r => setTimeout(r, 1500));
-    }
+      }
 
-    // Synthesis Step
+      // Synthesis Step
     setProject(p => ({ ...p, isSynthesizing: true }));
     addProtocolMessage({
       sourceId: 'system',
@@ -882,7 +1043,22 @@ const App: React.FC = () => {
                    )}
                 </div>
 
-               </div>
+                {/* Ralph Loop Panel - Phase 4 */}
+                <div className="mt-6 rounded-xl border overflow-hidden transition-all" style={{ borderColor: 'var(--border)' }}>
+                  <RalphLoopPanel
+                    prdItems={prdItems}
+                    isRunning={isRalphRunning}
+                    currentIteration={ralphIteration}
+                    maxIterations={ralphMaxIterations}
+                    completionRate={ralphCompletionRate}
+                    checkpoints={ralphCheckpoints}
+                    onStartRalphLoop={runRalphLoopHandler}
+                    onLoadCheckpoint={handleLoadRalphCheckpoint}
+                    onExportCheckpoints={handleExportRalphCheckpoints}
+                  />
+                </div>
+
+                </div>
             )}
             {activeTab === 'templates' && <Templates registry={registry} onUseTemplate={(p, c, s) => { setInputPrompt(p); if (c?.strategy) setStrategy(c.strategy); if (s) { setSelectedIds(registry.filter(r => s.includes(r.name)).map(r => r.id)); setProject(prev => ({ ...prev, teamMode: 'manual' })); } setActiveTab('setup'); }} />}
             {activeTab === 'hub' && <AgentHub registry={registry} selectedIds={selectedIds} onToggleSelect={id => setSelectedIds(p => p.includes(id) ? p.filter(i => i !== id) : [...p, id])} onUpdateRegistry={setRegistry} onAddCustom={a => setRegistry(p => [...p, a])} />}
@@ -1137,6 +1313,26 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
+                    {/* PHASE 3: CCA CODE ANALYZER */}
+                    <div className="border rounded-lg p-4 bg-black/20" style={{ borderColor: 'var(--border)' }}>
+                      <h4 className="text-[9px] font-black uppercase tracking-widest mb-3 text-yellow-400">Phase 3: CCA Code Auditor</h4>
+                      <button
+                        onClick={runCCAudit}
+                        disabled={ccaAnalyzing || project.files.length === 0}
+                        className="w-full px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed text-[10px] font-bold transition-colors mb-2"
+                      >
+                        {ccaAnalyzing ? '🔄 Analyzing...' : `🔍 Run CCA Audit (${project.files.length} files)`}
+                      </button>
+                      {ccaResult && (
+                        <div className="text-[8px] text-slate-400 space-y-1 bg-black/30 p-2 rounded">
+                          <div>✓ Modules: {ccaResult.moduleGraph.nodes.length}</div>
+                          <div>⚠️ Circular Deps: {ccaResult.moduleGraph.circularDeps.length}</div>
+                          <div>💀 Dead Code: {ccaResult.moduleGraph.deadCode.length}</div>
+                          <div>🎯 Refactor Ops: {ccaResult.refactoringOpportunities.length}</div>
+                        </div>
+                      )}
+                    </div>
+
                     {/* TERMINAL SETTINGS */}
                     <div className="border rounded-lg p-4 bg-black/20" style={{ borderColor: 'var(--border)' }}>
                       <h4 className="text-[9px] font-black uppercase tracking-widest mb-3 text-indigo-400">Terminal Settings</h4>
@@ -1306,30 +1502,24 @@ const App: React.FC = () => {
         {/* Phase 2: RLM Dashboard */}
         {rlmEnabled && rlmMetrics && (
           <div className="absolute bottom-40 left-6 z-30 max-w-md">
-            <RLMDashboard metrics={rlmMetrics} compressionRate={rlmCompressionRate} tokensSaved={rlmTokensSaved} />
+            <RLMDashboard 
+              compressionMetrics={rlmMetrics}
+              snapshot={currentSnapshot}
+              isEnabled={rlmEnabled}
+              onToggleRLM={setRlmEnabled}
+              totalPhases={project.phases.length}
+            />
           </div>
         )}
 
         {/* Phase 3: CCA Analyzer Modal */}
-        <CCAAnalyzer
-          isOpen={showCCAAnalyzer}
-          analyzing={ccaAnalyzing}
-          result={ccaResult}
-          onClose={() => setShowCCAAnalyzer(false)}
-          onAnalyze={async (files: string[]) => {
-            setCcaAnalyzing(true);
-            try {
-              const result = await generateCCAAuditReport(files.join('\n'), project.orchestratorConfig);
-              setCcaResult(result);
-              addLog('✓ CCA analysis complete');
-            } catch (error) {
-              const msg = error instanceof Error ? error.message : String(error);
-              addLog(`✗ CCA analysis failed: ${msg}`);
-            } finally {
-              setCcaAnalyzing(false);
-            }
-          }}
-        />
+        {showCCAAnalyzer && ccaResult && (
+          <CCAAnalyzer
+            report={ccaResult}
+            isLoading={ccaAnalyzing}
+            onDismiss={() => setShowCCAAnalyzer(false)}
+          />
+        )}
 
         {/* Phase 5: Proposal Cache Stats */}
         {cacheEnabled && cacheStats && (
