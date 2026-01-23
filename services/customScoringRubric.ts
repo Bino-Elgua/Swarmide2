@@ -9,7 +9,7 @@
  */
 
 import { ProposalOutput, Agent } from '../types';
-import { GoogleGenerativeAI, GenerativeContentBlob, GenerativeModel, SchemaType as Type } from '@google/generative-ai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 export interface ScoringDimension {
   id: string;

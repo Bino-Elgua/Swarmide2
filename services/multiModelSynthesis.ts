@@ -9,7 +9,7 @@
  */
 
 import { ProposalOutput, AIProvider, IntelligenceConfig } from '../types';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
 export interface ModelConfig {
   provider: AIProvider;

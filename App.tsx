@@ -4,6 +4,12 @@ import { orchestrateTeam, performAgentTask, synthesizeProject, speakText } from 
 import { resolveConflictingProposals } from './services/conflictResolver';
 import { validateBudget } from './services/costCalculator';
 import { runRalphLoop, PRDItem, RalphCheckpoint, parsePRDItems } from './services/ralphLoop';
+import { compressContext } from './services/rlmService';
+import { generateCCAAuditReport } from './services/ccaService';
+import { proposalCache, findReuseableProposal } from './services/proposalCache';
+import { getRubricForProject, rankProposalsWithRubric } from './services/customScoringRubric';
+import { synthesizeBalanced } from './services/multiModelSynthesis';
+import { appIntegration } from './services/appIntegration';
 import { HUB_REGISTRY } from './constants';
 import AgentLiveFeed from './components/AgentLiveFeed';
 import AgentList from './components/AgentList';
@@ -14,6 +20,15 @@ import AgentEditor from './components/AgentEditor';
 import ConflictResolver from './components/ConflictResolver';
 import CostTracker from './components/CostTracker';
 import RalphLoopPanel from './components/RalphLoopPanel';
+import { RLMDashboard } from './components/RLMDashboard';
+import CCAAnalyzer from './components/CCAAnalyzer';
+import HealthMonitor from './components/HealthMonitor';
+import APIMonitor from './components/APIMonitor';
+import ProposalCacheStats from './components/ProposalCacheStats';
+import RubricEditor from './components/RubricEditor';
+import MultiModelPanel from './components/MultiModelPanel';
+import ExecutionEngine from './components/ExecutionEngine';
+import IntegrationPanel from './components/IntegrationPanel';
 
 type Tab = 'hub' | 'setup' | 'graph' | 'ide' | 'templates';
 
@@ -123,7 +138,7 @@ const App: React.FC = () => {
   const [selectedProposal, setSelectedProposal] = useState<ProposalOutput | undefined>();
   const [resolutionReasoning, setResolutionReasoning] = useState<string>('');
 
-  // Phase 5: Ralph Loop - PRD-driven execution
+  // Phase 4: Ralph Loop - PRD-driven execution
   const [ralphEnabled, setRalphEnabled] = useState(false);
   const [prdItems, setPrdItems] = useState<PRDItem[]>([]);
   const [ralphIteration, setRalphIteration] = useState(0);
@@ -131,6 +146,42 @@ const App: React.FC = () => {
   const [ralphCompletionRate, setRalphCompletionRate] = useState(0);
   const [ralphCheckpoints, setRalphCheckpoints] = useState<RalphCheckpoint[]>([]);
   const [isRalphRunning, setIsRalphRunning] = useState(false);
+
+  // Phase 2: RLM Context Compression
+  const [rlmEnabled, setRlmEnabled] = useState(false);
+  const [rlmCompressionRate, setRlmCompressionRate] = useState(0);
+  const [rlmTokensSaved, setRlmTokensSaved] = useState(0);
+  const [rlmMetrics, setRlmMetrics] = useState<any>(null);
+
+  // Phase 3: CCA Code Analysis
+  const [ccaEnabled, setCcaEnabled] = useState(false);
+  const [ccaAnalyzing, setCcaAnalyzing] = useState(false);
+  const [ccaResult, setCcaResult] = useState<any>(null);
+  const [showCCAAnalyzer, setShowCCAAnalyzer] = useState(false);
+
+  // Phase 5: Advanced Features
+  // Proposal Caching
+  const [cacheEnabled, setCacheEnabled] = useState(true);
+  const [cacheStats, setCacheStats] = useState<any>(null);
+  
+  // Custom Rubrics
+  const [rubricEnabled, setRubricEnabled] = useState(true);
+  const [customRubric, setCustomRubric] = useState<any>(null);
+  const [showRubricEditor, setShowRubricEditor] = useState(false);
+  
+  // Multi-Model Synthesis
+  const [multiModelEnabled, setMultiModelEnabled] = useState(false);
+  const [multiModelResult, setMultiModelResult] = useState<any>(null);
+  const [showMultiModelPanel, setShowMultiModelPanel] = useState(false);
+
+  // Phase 6: Health Monitoring (already imported)
+  const [healthMonitorVisible, setHealthMonitorVisible] = useState(true);
+  const [apiMonitorVisible, setApiMonitorVisible] = useState(true);
+
+  // Phase 7: Integration Services
+  const [integrationEnabled, setIntegrationEnabled] = useState(false);
+  const [executionEngineRunning, setExecutionEngineRunning] = useState(false);
+  const [integrationPanelVisible, setIntegrationPanelVisible] = useState(false);
 
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInputRef = useRef<HTMLInputElement>(null);
@@ -168,6 +219,21 @@ const App: React.FC = () => {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [terminalHistory, terminalTab]);
+
+  // Initialize Phase 7: Integration Services
+  useEffect(() => {
+    const initializeIntegration = async () => {
+      try {
+        const result = await appIntegration.initialize();
+        addLog(`✓ Integration services initialized: ${result.status}`);
+        setIntegrationEnabled(true);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addLog(`⚠️ Integration initialization: ${msg}`);
+      }
+    };
+    initializeIntegration();
+  }, []);
 
   const addLog = (msg: string) => setProject(p => ({ ...p, orchestratorLog: [msg, ...p.orchestratorLog].slice(0, 100) }));
   
@@ -1236,6 +1302,98 @@ const App: React.FC = () => {
             setEditingAgent(null);
           }}
         />
+
+        {/* Phase 2: RLM Dashboard */}
+        {rlmEnabled && rlmMetrics && (
+          <div className="absolute bottom-40 left-6 z-30 max-w-md">
+            <RLMDashboard metrics={rlmMetrics} compressionRate={rlmCompressionRate} tokensSaved={rlmTokensSaved} />
+          </div>
+        )}
+
+        {/* Phase 3: CCA Analyzer Modal */}
+        <CCAAnalyzer
+          isOpen={showCCAAnalyzer}
+          analyzing={ccaAnalyzing}
+          result={ccaResult}
+          onClose={() => setShowCCAAnalyzer(false)}
+          onAnalyze={async (files: string[]) => {
+            setCcaAnalyzing(true);
+            try {
+              const result = await generateCCAAuditReport(files.join('\n'), project.orchestratorConfig);
+              setCcaResult(result);
+              addLog('✓ CCA analysis complete');
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error);
+              addLog(`✗ CCA analysis failed: ${msg}`);
+            } finally {
+              setCcaAnalyzing(false);
+            }
+          }}
+        />
+
+        {/* Phase 5: Proposal Cache Stats */}
+        {cacheEnabled && cacheStats && (
+          <div className="absolute bottom-80 right-6 z-30 max-w-sm">
+            <ProposalCacheStats stats={cacheStats} onClearCache={() => { proposalCache.clear(); setCacheStats(null); }} />
+          </div>
+        )}
+
+        {/* Phase 5: Rubric Editor Modal */}
+        <RubricEditor
+          isOpen={showRubricEditor}
+          rubric={customRubric}
+          onSave={(rubric) => {
+            setCustomRubric(rubric);
+            setShowRubricEditor(false);
+            addLog('✓ Custom rubric updated');
+          }}
+          onClose={() => setShowRubricEditor(false)}
+        />
+
+        {/* Phase 5: Multi-Model Synthesis Panel */}
+        {multiModelEnabled && multiModelResult && (
+          <div className="absolute top-96 right-6 z-30 max-w-lg">
+            <MultiModelPanel result={multiModelResult} onClose={() => setMultiModelResult(null)} />
+          </div>
+        )}
+
+        {/* Phase 6: Health Monitor */}
+        {healthMonitorVisible && (
+          <div className="absolute bottom-6 right-6 z-20">
+            <HealthMonitor />
+          </div>
+        )}
+
+        {/* Phase 6: API Monitor */}
+        {apiMonitorVisible && (
+          <div className="absolute bottom-6 left-6 z-20">
+            <APIMonitor />
+          </div>
+        )}
+
+        {/* Phase 7: ExecutionEngine Component */}
+        {integrationEnabled && executionEngineRunning && (
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 max-w-2xl max-h-96 overflow-y-auto">
+            <ExecutionEngine
+              prompt={inputPrompt}
+              registry={registry}
+              onExecutionComplete={(result) => {
+                addLog(`✓ Execution complete: ${result.success ? 'Success' : 'Failed'}`);
+                if (result.cost) {
+                  setCostActualUSD(result.cost.totalCostUSD || 0);
+                }
+                setExecutionEngineRunning(false);
+              }}
+            />
+          </div>
+        )}
+
+        {/* Phase 7: Integration Panel */}
+        {integrationPanelVisible && (
+          <div className="absolute top-20 left-6 z-40 max-w-lg max-h-96 overflow-y-auto">
+            <IntegrationPanel projectId={project.prompt.slice(0, 20)} />
+          </div>
+        )}
       </main>
     </div>
   );

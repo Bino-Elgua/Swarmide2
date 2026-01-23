@@ -1,17 +1,5 @@
 // Central integration point for all services in the React app
 import { integrationManager } from './integrationManager';
-import { specKitService } from './specKitService';
-import { specGenerationService } from './specGenerationService';
-import { supabaseService } from './supabaseService';
-import { durableWorkflowService } from './durableWorkflowService';
-import { securityValidationService } from './securityValidationService';
-import { lightRAGService } from './lightRAGService';
-import { seekDBService } from './seekDBService';
-import { vectorDBService } from './vectorDBService';
-import { multiProviderService } from './multiProviderService';
-import { langfuseService } from './langfuseService';
-import { n8nService } from './n8nService';
-import { langflowService } from './langflowService';
 import { OrchestrationResponse, Agent, ProposalOutput, CostMetrics } from '../types';
 
 export interface ExecutionContext {
