@@ -4,7 +4,7 @@
  */
 
 import { Agent, IntelligenceConfig, Phase } from '../types';
-import { orchestrateTeam, performAgentTask } from './geminiService';
+import { orchestrateTeam, performAgentTask, synthesizeProject } from './geminiService';
 
 export interface PRDItem {
   id: string;
@@ -47,6 +47,67 @@ export interface RalphLoopResult {
   checkpoints: RalphCheckpoint[];
   totalTokensUsed: number;
   totalCostUSD: number;
+}
+
+/**
+ * Detect which PRD items were completed by analyzing agent outputs
+ * Uses semantic similarity to match agent work against PRD items
+ */
+async function detectCompletedItems(
+  agentOutputs: string[],
+  remainingItems: PRDItem[]
+): Promise<string[]> {
+  if (agentOutputs.length === 0 || remainingItems.length === 0) {
+    return [];
+  }
+
+  const completedIds = new Set<string>();
+  const outputText = agentOutputs.join('\n');
+
+  // Simple heuristic: match keywords from PRD items in output
+  for (const item of remainingItems) {
+    const itemKeywords = item.description
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(w => w.length > 3); // Words longer than 3 chars
+
+    // Count keyword matches
+    let matchCount = 0;
+    for (const keyword of itemKeywords) {
+      const regex = new RegExp(`\\b${keyword}\\w*\\b`, 'gi');
+      const matches = outputText.match(regex) || [];
+      matchCount += Math.min(matches.length, 2); // Cap at 2 per keyword
+    }
+
+    // If more than 40% of keywords match, mark as completed
+    if (itemKeywords.length > 0 && matchCount / itemKeywords.length >= 0.4) {
+      completedIds.add(item.id);
+    }
+  }
+
+  // Also check for category-specific completions
+  const categoryMap: Record<string, string[]> = {
+    api: ['api', 'endpoint', 'rest', 'graphql', 'route', 'controller', 'handler'],
+    database: ['database', 'schema', 'migration', 'table', 'model', 'postgres', 'mongodb'],
+    frontend: ['component', 'ui', 'react', 'vue', 'angular', 'svelte', 'button', 'form'],
+    auth: ['auth', 'login', 'session', 'jwt', 'oauth', 'user', 'password'],
+    deployment: ['deploy', 'docker', 'k8s', 'ci/cd', 'devops', 'pipeline', 'github'],
+    testing: ['test', 'unit', 'e2e', 'jest', 'cypress', 'mocha', 'coverage'],
+    docs: ['doc', 'readme', 'guide', 'api', 'tutorial', 'example']
+  };
+
+  for (const item of remainingItems) {
+    const keywords = categoryMap[item.category] || [];
+    const itemOutput = outputText.toLowerCase();
+    const categoryMatches = keywords.filter(kw => itemOutput.includes(kw)).length;
+
+    // If category keywords heavily mentioned, mark completed
+    if (keywords.length > 0 && categoryMatches >= Math.ceil(keywords.length * 0.5)) {
+      completedIds.add(item.id);
+    }
+  }
+
+  return Array.from(completedIds);
 }
 
 /**
@@ -139,67 +200,72 @@ export async function runRalphLoop(
     }
 
     try {
+      // Sort remaining items by priority (high → medium → low)
+      const priorityMap = { high: 0, medium: 1, low: 2 };
+      const sortedRemaining = remaining.sort((a, b) => 
+        priorityMap[a.priority] - priorityMap[b.priority]
+      );
+
+      // Take top 5 items for this iteration to avoid context explosion
+      const itemsThisIteration = sortedRemaining.slice(0, 5);
+      
       // Build fresh orchestration prompt (avoid context overflow)
-      const remainingStr = remaining
+      const remainingStr = itemsThisIteration
         .map(p => `- [${p.category.toUpperCase()}] ${p.description} (priority: ${p.priority})`)
         .join('\n');
 
       const refreshPrompt = `ORIGINAL MISSION: "${initialPrompt}"
 
-REMAINING WORK TO COMPLETE:
+REMAINING WORK TO COMPLETE (${itemsThisIteration.length} items):
 ${remainingStr}
 
 INSTRUCTIONS:
 1. This is iteration ${iteration}/${maxIterations}
 2. Previous context is cleared to avoid token overflow (fresh restart)
-3. Focus ONLY on remaining incomplete items
+3. Focus ONLY on the listed incomplete items
 4. For each item, generate high-quality implementation code/design
-5. Mark items as complete when finished
-6. Return JSON with completed items and implementation details
+5. Your work will be analyzed to mark items as complete
+6. All outputs are concatenated for final synthesis
 
-RESPONSE FORMAT:
-{
-  "completedItems": [
-    {
-      "id": "prd-X",
-      "description": "...",
-      "implementation": "...code/details...",
-      "notes": "..."
-    }
-  ],
-  "architectureNotes": "...key decisions...",
-  "remainingChallenges": ["..."]
-}`;
+REQUIREMENTS:
+- Address each item methodically
+- Provide implementation details or design specs
+- Be specific and technical (not vague)`;
 
-      onProgress(`Ralph Iteration ${iteration}: Fresh orchestration starting...`, completionRate);
+      onProgress(`Ralph Iteration ${iteration}: Processing ${itemsThisIteration.length} items with fresh context...`, completionRate);
 
       // Call orchestrator with fresh context
-      const result = await orchestrateTeam(refreshPrompt, currentPRD.slice(0, 5), aiConfig);
+      const result = await orchestrateTeam(refreshPrompt, itemsThisIteration, aiConfig);
 
-      // Extract completed items from response
-      const completedIds = new Set<string>();
+      // Use smart detection to identify completed items
+      const agentOutputs: string[] = [];
       if (result.initialTeam) {
         result.initialTeam.forEach(agent => {
-          // Simple heuristic: if agent description matches PRD item prefix, mark as done
-          remaining.slice(0, 3).forEach(item => {
-            if (agent.description.toLowerCase().includes(item.description.slice(0, 20).toLowerCase())) {
-              completedIds.add(item.id);
-            }
-          });
+          agentOutputs.push(`${agent.name}: ${agent.description}`);
         });
       }
+
+      const completedIds = await detectCompletedItems(agentOutputs, itemsThisIteration);
+      const completedThisRound = itemsThisIteration.filter(p => completedIds.includes(p.id));
 
       // Mark items as completed
       currentPRD = currentPRD.map(p => ({
         ...p,
-        completed: p.completed || completedIds.has(p.id),
-        iteration: p.completed ? p.iteration : iteration,
-        completedAt: completedIds.has(p.id) && !p.completed ? new Date() : p.completedAt
+        completed: p.completed || completedIds.includes(p.id),
+        iteration: p.completed ? p.iteration : (completedIds.includes(p.id) ? iteration : p.iteration),
+        completedAt: completedIds.includes(p.id) && !p.completed ? new Date() : p.completedAt,
+        notes: completedIds.includes(p.id) && !p.notes ? `Completed in iteration ${iteration}` : p.notes
       }));
 
       // Track outputs
       if (result.initialTeam) {
         allOutputs.push(result.initialTeam.map(a => `${a.name}: ${a.description}`).join('\n'));
+      }
+
+      // Log specific completions
+      if (completedThisRound.length > 0) {
+        const completedNames = completedThisRound.map(p => p.description).join(', ');
+        onProgress(`✓ Completed this round: ${completedNames}`, currentPRD.filter(p => p.completed).length / currentPRD.length);
       }
 
       // Create checkpoint
