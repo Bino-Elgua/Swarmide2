@@ -50,6 +50,16 @@ export interface RalphLoopResult {
 }
 
 /**
+ * Estimate token count for text (rough approximation)
+ * Uses: 1 token ≈ 4 characters (GPT/Claude standard)
+ */
+function estimateTokenCount(text: string): number {
+  if (!text || text.length === 0) return 0;
+  // GPT tokenizer rule: ~4 chars = 1 token, but add buffer for punctuation
+  return Math.ceil(text.length / 3.5);
+}
+
+/**
  * Detect which PRD items were completed by analyzing agent outputs
  * Uses semantic similarity to match agent work against PRD items
  */
@@ -258,8 +268,11 @@ REQUIREMENTS:
       }));
 
       // Track outputs
-      if (result.initialTeam) {
-        allOutputs.push(result.initialTeam.map(a => `${a.name}: ${a.description}`).join('\n'));
+      const agentOutputStr = result.initialTeam
+        ? result.initialTeam.map(a => `${a.name}: ${a.description}`).join('\n')
+        : '';
+      if (agentOutputStr) {
+        allOutputs.push(agentOutputStr);
       }
 
       // Log specific completions
@@ -267,6 +280,11 @@ REQUIREMENTS:
         const completedNames = completedThisRound.map(p => p.description).join(', ');
         onProgress(`✓ Completed this round: ${completedNames}`, currentPRD.filter(p => p.completed).length / currentPRD.length);
       }
+
+      // Calculate real token usage for this iteration
+      const iterationTokensUsed = estimateTokenCount(
+        refreshPrompt + agentOutputStr
+      );
 
       // Create checkpoint
       const checkpoint: RalphCheckpoint = {
@@ -309,21 +327,44 @@ REQUIREMENTS:
 
       checkpoints.push(checkpoint);
       onProgress(
-        `Ralph Iteration ${iteration}: Checkpoint saved. Completed ${checkpoint.completedItems.length} items.`,
+        `Ralph Iteration ${iteration}: Checkpoint saved. Used ~${iterationTokensUsed.toLocaleString()} tokens. Completed ${checkpoint.completedItems.length} items.`,
         checkpoint.completionRate,
         checkpoint
       );
 
-      // Simulate token usage (in production, track from actual API)
-      totalTokensUsed += 15000; // ~15k tokens per iteration
-      totalCostUSD += 0.35; // ~$0.35 per iteration on Gemini 3
+      // Track real token usage
+      totalTokensUsed += iterationTokensUsed;
+      
+      // Calculate cost based on Gemini 3 pro pricing (~$0.075 per 1M input, $0.3 per 1M output)
+      // Assume 30% output ratio on average
+      const estimatedInputTokens = iterationTokensUsed * 0.7;
+      const estimatedOutputTokens = iterationTokensUsed * 0.3;
+      const iterationCost = (estimatedInputTokens / 1000000) * 0.075 + (estimatedOutputTokens / 1000000) * 0.3;
+      totalCostUSD += iterationCost;
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+      const failureCheckpoint: RalphCheckpoint = {
+        iteration,
+        timestamp: new Date(),
+        completedItems: currentPRD.filter(p => p.completed),
+        remainingItems: currentPRD.filter(p => !p.completed),
+        completionRate: currentPRD.filter(p => p.completed).length / currentPRD.length,
+        outputs: allOutputs,
+        agents: [],
+        errors: [errorMsg]
+      };
+      
+      // Save checkpoint even on error (allows recovery)
+      checkpoints.push(failureCheckpoint);
+      
       onProgress(
-        `⚠ Ralph Iteration ${iteration}: Error: ${errorMsg}`,
+        `⚠ Ralph Iteration ${iteration}: Error: ${errorMsg}. Checkpoint saved for recovery.`,
         completionRate
       );
+      
+      // Don't break loop on first error, continue to next iteration
+      // This allows partial progress to be saved
     }
   }
 
