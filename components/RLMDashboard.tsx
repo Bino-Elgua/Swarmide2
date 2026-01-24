@@ -227,3 +227,5 @@ export const RLMDashboard: React.FC<RLMDashboardProps> = ({
     </div>
   );
 };
+
+export default RLMDashboard;
