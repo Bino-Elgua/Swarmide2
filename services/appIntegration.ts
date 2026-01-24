@@ -1,5 +1,6 @@
 // Central integration point for all services in the React app
 import { integrationManager } from './integrationManager';
+import { securityValidationService } from './securityValidationService';
 import { OrchestrationResponse, Agent, ProposalOutput, CostMetrics } from '../types';
 
 export interface ExecutionContext {

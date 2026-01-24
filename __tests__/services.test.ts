@@ -1,5 +1,5 @@
 // Service unit tests
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { specKitService } from '../services/specKitService';
 import { lightRAGService } from '../services/lightRAGService';
 import { securityValidationService } from '../services/securityValidationService';
@@ -73,6 +73,7 @@ describe('Security Validation Service', () => {
   });
 
   it('should detect SQL injection', async () => {
+    const userId = '123'; // Fixed: was undefined
     const vulnCode = "SELECT * FROM users WHERE id = " + userId;
     const scan = await securityValidationService.scanCode(vulnCode);
     expect(scan.vulnerabilities.length).toBeGreaterThan(0);

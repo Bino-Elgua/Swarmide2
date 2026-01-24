@@ -1,10 +1,10 @@
 import { traceLLMCall, LLMCallTrace, tracePhase, trackAgentCost } from './langfuseService';
 import * as n8nModule from './n8nService';
 import * as langflowModule from './langflowService';
-import * as multiProviderModule from './multiProviderService';
-import * as lightRAGModule from './lightRAGService';
-import * as seekDBModule from './seekDBService';
-import * as vectorDBModule from './vectorDBService';
+import { multiProviderService } from './multiProviderService';
+import { lightRAGService } from './lightRAGService';
+import { seekDBService } from './seekDBService';
+import { vectorDBService } from './vectorDBService';
 import * as specGenModule from './specGenerationService';
 import * as workflowModule from './durableWorkflowService';
 import * as securityModule from './securityValidationService';
