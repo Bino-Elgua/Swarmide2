@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useTerminalBridge } from './hooks/useTerminalBridge';
 import { ProjectState, Agent, AgentStatus, OrchestrationResponse, Message, ProtocolMessage, Phase, FileEntry, TeamMode, TerminalTab, FileVersion, AgentTask, AIProvider, IntelligenceConfig, ProposalOutput, ConflictResolution, CostMetrics } from './types';
 import { orchestrateTeam, performAgentTask, synthesizeProject, speakText } from './services/geminiService';
 import { resolveConflictingProposals } from './services/conflictResolver';
@@ -109,6 +110,15 @@ const App: React.FC = () => {
   const [terminalShowTimestamp, setTerminalShowTimestamp] = useState(true);
   const [terminalBlinkingCursor, setTerminalBlinkingCursor] = useState(true);
   const [isSpeechEnabled, setIsSpeechEnabled] = useState(true);
+
+  // ── Terminal Bridge: real PTY sessions via WebSocket backend ──────────────
+  const terminalBridge = useTerminalBridge();
+  const { lastNLCommand } = terminalBridge;
+  const [nlInput, setNlInput] = useState('');
+  const [terminalMode, setTerminalMode] = useState<'virtual' | 'real'>(() =>
+    localStorage.getItem('vibe_terminal_mode') === 'real' ? 'real' : 'virtual'
+  );
+  useEffect(() => { localStorage.setItem('vibe_terminal_mode', terminalMode); }, [terminalMode]);
   const [logicHubApiKey, setLogicHubApiKey] = useState(() => localStorage.getItem('vibe_logic_hub_key') || '');
   const [logicHubModel, setLogicHubModel] = useState(() => localStorage.getItem('vibe_logic_hub_model') || 'gemini-3-pro-preview');
   const [synthesisApiKey, setSynthesisApiKey] = useState(() => localStorage.getItem('vibe_synthesis_key') || '');
@@ -254,6 +264,23 @@ const App: React.FC = () => {
     initializeIntegration();
   }, []);
 
+  // Terminal Bridge: auto-fetch git status when connected in real mode
+  useEffect(() => {
+    if (terminalBridge.isConnected && terminalMode === 'real') {
+      terminalBridge.runGitOp('status', { repoPath: undefined });
+    }
+  }, [terminalBridge.isConnected, terminalMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Terminal Bridge: react to NL phase trigger commands
+  useEffect(() => {
+    if (!lastNLCommand) return;
+    if (lastNLCommand.type === 'phase' && lastNLCommand.phase) {
+      addLog(`[NL Terminal] Triggering Phase ${lastNLCommand.phase}: ${lastNLCommand.explanation}`);
+      if (lastNLCommand.phase === 3) setCcaEnabled(true);
+      if (lastNLCommand.phase === 6) setHealthMonitorVisible(true);
+    }
+  }, [lastNLCommand]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Phase 4: Ralph Loop - Checkpoint Persistence
   useEffect(() => {
     if (ralphCheckpoints.length > 0) {
@@ -322,22 +349,67 @@ const App: React.FC = () => {
     e.preventDefault();
     const cmd = terminalInput.trim();
     if (!cmd) return;
-    if (cmd === 'clear') { setTerminalHistory([]); setTerminalInput(''); return; }
-    if (cmd === 'help') { 
-      setTerminalHistory(p => [...p, { cmd, output: [
-        'vibe-cli v2.5.0 RESTORED',
-        '-----------------------',
-        'clear     : Flush logic buffer',
-        'help      : Display command manifest',
-        'theme     : Cycle global aesthetic engine',
-        'fleet     : Query node swarm status',
-        'protocol  : Sync inter-node communication',
-        'snippets  : List cached execution scripts'
-      ], timestamp: new Date().toLocaleTimeString([], {hour12: false}) }]); 
-      setTerminalInput(''); return; 
+
+    const timestamp = new Date().toLocaleTimeString([], { hour12: false });
+
+    // ── Real mode: route through PTY WebSocket bridge ──────────────────────
+    if (terminalMode === 'real' && terminalBridge.isConnected) {
+      if (cmd === 'clear') { terminalBridge.clearOutput(); setTerminalInput(''); return; }
+      // Ensure we have an active session; auto-create if not
+      if (!terminalBridge.activeSessionId) {
+        terminalBridge.createSession({ cwd: undefined, cols: 120, rows: 30 });
+        // Queue the command after session creation via a brief delay
+        setTimeout(() => terminalBridge.sendInput(cmd + '\r'), 600);
+      } else {
+        terminalBridge.sendInput(cmd + '\r');
+      }
+      setTerminalHistory(p => [...p, { cmd, output: ['[Routed to real PTY — see terminal output below]'], timestamp }]);
+      setTerminalInput('');
+      return;
     }
-    setTerminalHistory(p => [...p, { cmd, output: [`'${cmd}' executed in virtual sandbox. Result: NOMINAL.`], timestamp: new Date().toLocaleTimeString([], {hour12: false}) }]);
+
+    // ── Virtual mode: legacy mock execution ───────────────────────────────
+    if (cmd === 'clear') { setTerminalHistory([]); setTerminalInput(''); return; }
+    if (cmd === 'help') {
+      setTerminalHistory(p => [...p, { cmd, output: [
+        'vibe-cli v2.5.0 — Claude Terminal Integration',
+        '----------------------------------------------',
+        'clear      : Flush logic buffer',
+        'help       : Display command manifest',
+        'theme      : Cycle global aesthetic engine',
+        'fleet      : Query node swarm status',
+        'protocol   : Sync inter-node communication',
+        'snippets   : List cached execution scripts',
+        '',
+        'Real Terminal Mode: switch via settings tab → "Enable Real Shell"',
+        'When connected: all commands route to a live PTY session.',
+      ], timestamp }]);
+      setTerminalInput('');
+      return;
+    }
+    setTerminalHistory(p => [...p, { cmd, output: [`'${cmd}' executed in virtual sandbox. Enable Real Shell for live execution.`], timestamp }]);
     setTerminalInput('');
+  };
+
+  const handleNLExecute = (e: React.FormEvent) => {
+    e.preventDefault();
+    const prompt = nlInput.trim();
+    if (!prompt) return;
+    if (terminalBridge.isConnected) {
+      terminalBridge.executeNL(prompt);
+      setTerminalHistory(p => [...p, {
+        cmd: `[NL] ${prompt}`,
+        output: ['Parsing natural language command…'],
+        timestamp: new Date().toLocaleTimeString([], { hour12: false }),
+      }]);
+    } else {
+      setTerminalHistory(p => [...p, {
+        cmd: `[NL] ${prompt}`,
+        output: ['Terminal server offline. Start with: npm run terminal-server'],
+        timestamp: new Date().toLocaleTimeString([], { hour12: false }),
+      }]);
+    }
+    setNlInput('');
   };
 
   const handleAddSnippet = () => {
@@ -1537,10 +1609,10 @@ const App: React.FC = () => {
           <div className="h-8 px-4 flex items-center justify-between border-b shrink-0 bg-black/40 z-[70]" style={{ borderColor: 'var(--border)' }}>
             <div className="flex items-center h-full space-x-1">
                {['terminal', 'output', 'history', 'snippets', 'settings'].map(t => (
-                 <button 
-                  key={t} 
-                  onClick={() => { setTerminalTab(t as TerminalTab); setIsTerminalMinimized(false); }} 
-                  className={`px-3 h-full text-[9px] font-black uppercase tracking-widest border-b-2 transition-all ${terminalTab === t && !isTerminalMinimized ? 'text-white' : 'opacity-30 hover:opacity-100'}`} 
+                 <button
+                  key={t}
+                  onClick={() => { setTerminalTab(t as TerminalTab); setIsTerminalMinimized(false); }}
+                  className={`px-3 h-full text-[9px] font-black uppercase tracking-widest border-b-2 transition-all ${terminalTab === t && !isTerminalMinimized ? 'text-white' : 'opacity-30 hover:opacity-100'}`}
                   style={terminalTab === t && !isTerminalMinimized ? { borderColor: 'var(--accent)', color: 'var(--text-bold)' } : { borderColor: 'transparent' }}
                  >
                    {t}
@@ -1548,6 +1620,14 @@ const App: React.FC = () => {
                ))}
             </div>
             <div className="flex items-center space-x-3 text-slate-500">
+               {/* Real shell connection status indicator */}
+               <span
+                 title={terminalBridge.isConnected ? `Real PTY connected · ${terminalBridge.sessions.length} session(s)` : terminalBridge.isConnecting ? 'Connecting to terminal server…' : 'Terminal server offline — start with: npm run terminal-server'}
+                 className={`flex items-center space-x-1 text-[8px] font-bold uppercase tracking-widest ${terminalBridge.isConnected ? 'text-green-400' : terminalBridge.isConnecting ? 'text-yellow-400 animate-pulse' : 'text-slate-600'}`}
+               >
+                 <span className={`w-1.5 h-1.5 rounded-full ${terminalBridge.isConnected ? 'bg-green-400' : terminalBridge.isConnecting ? 'bg-yellow-400' : 'bg-slate-600'}`} />
+                 <span>{terminalBridge.isConnected ? 'live' : terminalBridge.isConnecting ? 'connecting' : 'offline'}</span>
+               </span>
                <button onClick={() => { setTerminalMaximized(!terminalMaximized); setIsTerminalMinimized(false); }} title="Toggle Maximize" className="hover:text-white transition-colors w-6 h-6 flex items-center justify-center">
                   <i className={`fa-solid ${terminalMaximized ? 'fa-compress' : 'fa-expand'} text-[9px]`} />
                </button>
@@ -1560,36 +1640,148 @@ const App: React.FC = () => {
           {!isTerminalMinimized && (
             <div className="flex-1 overflow-hidden flex flex-col p-4 font-mono select-text" style={{ fontSize: `${terminalFontSize}px`, color: GLOBAL_THEMES[activeTheme].fg }}>
                {terminalTab === 'terminal' && (
-                 <div className="h-full overflow-y-auto custom-scrollbar" ref={terminalRef}>
-                    {terminalHistory.map((h, i) => (
-                      <div key={i} className="mb-2 opacity-80 animate-fade-in">
+                 <div className="h-full flex flex-col overflow-hidden">
+                   {/* Real terminal output panel (when connected) */}
+                   {terminalMode === 'real' && terminalBridge.isConnected && (
+                     <div className="border rounded mb-2 p-2 bg-black/30 overflow-y-auto flex-1 custom-scrollbar" style={{ borderColor: 'var(--border)', maxHeight: '60%' }}>
+                       <div className="flex items-center justify-between mb-1">
+                         <span className="text-[8px] font-bold uppercase tracking-widest text-green-400">
+                           <i className="fa-solid fa-terminal mr-1" />Live PTY · Session: {terminalBridge.activeSessionId?.slice(-6) ?? 'none'} · {terminalBridge.sessions.length} active
+                         </span>
+                         <div className="flex items-center space-x-2">
+                           {!terminalBridge.activeSessionId && (
+                             <button onClick={() => terminalBridge.createSession()} className="text-[8px] px-2 py-0.5 rounded text-cyan-400 border border-cyan-400/30 hover:bg-cyan-400/10 transition-colors">
+                               + New Session
+                             </button>
+                           )}
+                           <button onClick={terminalBridge.clearOutput} className="text-[8px] text-slate-500 hover:text-white transition-colors">clear</button>
+                         </div>
+                       </div>
+                       <div className="whitespace-pre-wrap break-all text-[10px] leading-relaxed" style={{ color: GLOBAL_THEMES[activeTheme].fg }}>
+                         {terminalBridge.terminalOutput.map((line, i) => (
+                           <span key={i} dangerouslySetInnerHTML={{ __html: line.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }} />
+                         ))}
+                       </div>
+                       {/* Natural language input */}
+                       <form onSubmit={handleNLExecute} className="flex items-center space-x-2 mt-2 pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
+                         <i className="fa-solid fa-wand-magic-sparkles text-[9px] text-purple-400" />
+                         <input
+                           value={nlInput}
+                           onChange={e => setNlInput(e.target.value)}
+                           placeholder="Natural language command…"
+                           className="bg-transparent border-none outline-none flex-1 font-mono text-[10px] text-purple-300 placeholder-purple-400/40"
+                           spellCheck={false}
+                         />
+                         {lastNLCommand && (
+                           <span className="text-[8px] text-purple-400/60 truncate max-w-[120px]">{lastNLCommand.explanation}</span>
+                         )}
+                       </form>
+                     </div>
+                   )}
+                   {/* Connection banner when offline */}
+                   {terminalMode === 'real' && !terminalBridge.isConnected && (
+                     <div className="border rounded mb-2 p-3 bg-yellow-500/5 border-yellow-500/20 text-[9px] text-yellow-400/70">
+                       <i className="fa-solid fa-plug-circle-xmark mr-2" />
+                       Terminal server offline. Run <code className="bg-black/40 px-1 rounded">npm run terminal-server</code> to enable real shell access.
+                     </div>
+                   )}
+                   {/* Virtual terminal history */}
+                   <div className="overflow-y-auto custom-scrollbar flex-1" ref={terminalRef}>
+                     {terminalHistory.map((h, i) => (
+                       <div key={i} className="mb-2 opacity-80 animate-fade-in">
                          <div className="flex items-center space-x-2">
                            {terminalShowTimestamp && <span className="text-[9px] opacity-20">[{h.timestamp}]</span>}
                            <span className="font-black" style={{ color: 'var(--accent)' }}>{terminalPrefix}</span>
                            <span>{h.cmd}</span>
                          </div>
                          {h.output.map((line, li) => <div key={li} className="ml-8 mt-0.5 opacity-50 flex items-start space-x-2"><i className="fa-solid fa-angle-right mt-1 text-[8px]" /><span>{line}</span></div>)}
-                      </div>
-                    ))}
-                    <form onSubmit={handleTerminalCommand} className="flex items-center space-x-2">
+                       </div>
+                     ))}
+                     <form onSubmit={handleTerminalCommand} className="flex items-center space-x-2">
                        {terminalShowTimestamp && <span className="text-[9px] opacity-20">[{new Date().toLocaleTimeString([], {hour12: false})}]</span>}
                        <span className="font-black" style={{ color: 'var(--accent)' }}>{terminalPrefix}</span>
-                       <input 
-                        ref={terminalInputRef} 
-                        value={terminalInput} 
-                        onChange={e => setTerminalInput(e.target.value)} 
-                        className="bg-transparent border-none outline-none flex-1 font-mono" 
-                        autoFocus 
-                        spellCheck={false} 
+                       <input
+                        ref={terminalInputRef}
+                        value={terminalInput}
+                        onChange={e => setTerminalInput(e.target.value)}
+                        className="bg-transparent border-none outline-none flex-1 font-mono"
+                        autoFocus
+                        spellCheck={false}
                         style={{ caretColor: 'var(--accent)', color: GLOBAL_THEMES[activeTheme].fg }}
                        />
                        {terminalBlinkingCursor && <div className="w-2 h-4 animate-pulse shadow-lg" style={{ backgroundColor: 'var(--accent)' }} />}
-                    </form>
+                     </form>
+                   </div>
                  </div>
                )}
 
                {terminalTab === 'settings' && (
                  <div className="h-full overflow-y-auto space-y-4 p-4 animate-fade-in custom-scrollbar">
+                    {/* ── CLAUDE TERMINAL INTEGRATION ─────────────────────────── */}
+                    <div className="border rounded-lg p-4 bg-black/20" style={{ borderColor: 'var(--border)' }}>
+                      <h4 className="text-[9px] font-black uppercase tracking-widest mb-3 text-green-400">
+                        <i className="fa-solid fa-terminal mr-2" />Claude Terminal Integration
+                      </h4>
+                      <div className="space-y-3 text-[8px]">
+                        {/* Real shell toggle */}
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="font-bold text-slate-300">Enable Real Shell</span>
+                            <p className="text-slate-500 mt-0.5">Routes commands to a live PTY via WebSocket. Requires <code className="bg-black/40 px-1 rounded">npm run terminal-server</code>.</p>
+                          </div>
+                          <button
+                            onClick={() => setTerminalMode(m => m === 'real' ? 'virtual' : 'real')}
+                            className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${terminalMode === 'real' ? 'bg-green-500' : 'bg-slate-700'}`}
+                          >
+                            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${terminalMode === 'real' ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                          </button>
+                        </div>
+                        {/* Connection status */}
+                        <div className="flex items-center justify-between border-t pt-2" style={{ borderColor: 'var(--border)' }}>
+                          <span className="text-slate-400">Backend Status</span>
+                          <span className={`font-bold ${terminalBridge.isConnected ? 'text-green-400' : terminalBridge.isConnecting ? 'text-yellow-400' : 'text-red-400'}`}>
+                            {terminalBridge.isConnected ? `Connected · ${terminalBridge.sessions.length} session(s)` : terminalBridge.isConnecting ? 'Connecting…' : 'Offline'}
+                          </span>
+                        </div>
+                        {/* Git status */}
+                        {terminalBridge.gitStatus && (
+                          <div className="border-t pt-2 space-y-1" style={{ borderColor: 'var(--border)' }}>
+                            <span className="text-slate-400 font-bold">Git Status</span>
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              <span className="text-cyan-400"><i className="fa-solid fa-code-branch mr-1" />{terminalBridge.gitStatus.branch}</span>
+                              {terminalBridge.gitStatus.staged.length > 0 && <span className="text-green-400">+{terminalBridge.gitStatus.staged.length} staged</span>}
+                              {terminalBridge.gitStatus.unstaged.length > 0 && <span className="text-yellow-400">~{terminalBridge.gitStatus.unstaged.length} modified</span>}
+                              {terminalBridge.gitStatus.untracked.length > 0 && <span className="text-slate-400">?{terminalBridge.gitStatus.untracked.length} untracked</span>}
+                            </div>
+                          </div>
+                        )}
+                        {/* Session management */}
+                        {terminalBridge.isConnected && (
+                          <div className="border-t pt-2 flex items-center space-x-2" style={{ borderColor: 'var(--border)' }}>
+                            <button
+                              onClick={() => terminalBridge.createSession()}
+                              className="px-2 py-1 rounded border border-green-400/30 text-green-400 hover:bg-green-400/10 transition-colors"
+                            >
+                              <i className="fa-solid fa-plus mr-1" />New Session
+                            </button>
+                            <button
+                              onClick={() => terminalBridge.runGitOp('status', { repoPath: undefined })}
+                              className="px-2 py-1 rounded border border-cyan-400/30 text-cyan-400 hover:bg-cyan-400/10 transition-colors"
+                            >
+                              <i className="fa-solid fa-code-branch mr-1" />Refresh Git
+                            </button>
+                            {terminalBridge.activeSessionId && (
+                              <button
+                                onClick={() => terminalBridge.destroySession()}
+                                className="px-2 py-1 rounded border border-red-400/30 text-red-400 hover:bg-red-400/10 transition-colors"
+                              >
+                                <i className="fa-solid fa-times mr-1" />Kill Session
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                     {/* AI ENGINE CONFIGURATIONS */}
                     <div className="border rounded-lg p-4 bg-black/20" style={{ borderColor: 'var(--border)' }}>
                       <h4 className="text-[9px] font-black uppercase tracking-widest mb-3 text-cyan-400">Orchestrator Config</h4>
