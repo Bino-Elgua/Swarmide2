@@ -391,15 +391,32 @@ const App: React.FC = () => {
     setTerminalInput('');
   };
 
+  /**
+   * Build the LLM config from whatever the user currently has configured
+   * in their orchestrator settings. Passed to the terminal backend so NL
+   * parsing uses the same provider as the rest of SwarmIDE2.
+   */
+  const getTerminalLLMConfig = useCallback(() => {
+    const { provider, model } = project.orchestratorConfig;
+    // Map SwarmIDE2 AIProvider ('google'|'openai'|'anthropic') to terminal LLM provider names
+    const providerMap: Record<string, string> = { google: 'gemini', openai: 'openai', anthropic: 'anthropic' };
+    return {
+      provider: providerMap[provider] ?? provider,
+      model,
+      // logicHubApiKey is whatever key the user pasted for the active provider
+      apiKey: logicHubApiKey || undefined,
+    };
+  }, [project.orchestratorConfig, logicHubApiKey]);
+
   const handleNLExecute = (e: React.FormEvent) => {
     e.preventDefault();
     const prompt = nlInput.trim();
     if (!prompt) return;
     if (terminalBridge.isConnected) {
-      terminalBridge.executeNL(prompt);
+      terminalBridge.executeNL(prompt, getTerminalLLMConfig());
       setTerminalHistory(p => [...p, {
         cmd: `[NL] ${prompt}`,
-        output: ['Parsing natural language command…'],
+        output: [`Parsing via ${project.orchestratorConfig.provider} (${project.orchestratorConfig.model})…`],
         timestamp: new Date().toLocaleTimeString([], { hour12: false }),
       }]);
     } else {
@@ -1662,18 +1679,21 @@ const App: React.FC = () => {
                            <span key={i} dangerouslySetInnerHTML={{ __html: line.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }} />
                          ))}
                        </div>
-                       {/* Natural language input */}
+                       {/* Natural language input — uses active orchestrator provider */}
                        <form onSubmit={handleNLExecute} className="flex items-center space-x-2 mt-2 pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
                          <i className="fa-solid fa-wand-magic-sparkles text-[9px] text-purple-400" />
                          <input
                            value={nlInput}
                            onChange={e => setNlInput(e.target.value)}
-                           placeholder="Natural language command…"
+                           placeholder={`Ask ${project.orchestratorConfig.provider === 'google' ? 'Gemini' : project.orchestratorConfig.provider === 'anthropic' ? 'Claude' : 'GPT'}…`}
                            className="bg-transparent border-none outline-none flex-1 font-mono text-[10px] text-purple-300 placeholder-purple-400/40"
                            spellCheck={false}
                          />
+                         <span className="text-[8px] text-purple-400/40 shrink-0">
+                           {project.orchestratorConfig.provider === 'google' ? 'Gemini' : project.orchestratorConfig.provider === 'anthropic' ? 'Claude' : 'GPT'}
+                         </span>
                          {lastNLCommand && (
-                           <span className="text-[8px] text-purple-400/60 truncate max-w-[120px]">{lastNLCommand.explanation}</span>
+                           <span className="text-[8px] text-purple-400/60 truncate max-w-[100px]">{lastNLCommand.explanation}</span>
                          )}
                        </form>
                      </div>
@@ -1743,6 +1763,16 @@ const App: React.FC = () => {
                             {terminalBridge.isConnected ? `Connected · ${terminalBridge.sessions.length} session(s)` : terminalBridge.isConnecting ? 'Connecting…' : 'Offline'}
                           </span>
                         </div>
+                        {/* Active NL provider */}
+                        <div className="flex items-center justify-between" style={{ borderColor: 'var(--border)' }}>
+                          <span className="text-slate-400">NL Provider</span>
+                          <span className="text-purple-400 font-bold">
+                            {project.orchestratorConfig.provider === 'google' ? 'Gemini' : project.orchestratorConfig.provider === 'anthropic' ? 'Claude' : 'OpenAI'} · {project.orchestratorConfig.model}
+                          </span>
+                        </div>
+                        <p className="text-slate-600 text-[7px]">
+                          NL commands use your active orchestrator provider. Change it in the Orchestrator Config section below.
+                        </p>
                         {/* Git status */}
                         {terminalBridge.gitStatus && (
                           <div className="border-t pt-2 space-y-1" style={{ borderColor: 'var(--border)' }}>

@@ -51,6 +51,18 @@ export interface ParsedNLCommand {
   phase?: number;
 }
 
+/**
+ * Subset of LLMConfig passed from App.tsx to the terminal backend.
+ * Maps directly to SwarmIDE2's AIProvider values and the orchestrator config.
+ * The apiKey is transmitted over localhost only — never to a third party.
+ */
+export interface TerminalLLMConfig {
+  provider: string;   // 'google'|'anthropic'|'openai'|'groq'|'mistral'|'deepseek'|'ollama'
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
 export interface TerminalBridgeState {
   isConnected: boolean;
   isConnecting: boolean;
@@ -68,7 +80,8 @@ export interface TerminalBridgeActions {
   destroySession: (sessionId?: string) => void;
   setActiveSession: (sessionId: string) => void;
   runGitOp: (op: string, args?: Record<string, unknown>) => void;
-  executeNL: (prompt: string) => void;
+  /** Execute a natural language command using the configured LLM provider. */
+  executeNL: (prompt: string, llmConfig?: TerminalLLMConfig) => void;
   clearOutput: () => void;
 }
 
@@ -223,10 +236,13 @@ export function useTerminalBridge(): TerminalBridgeHook {
     });
   }, [activeSessionId]);
 
-  const executeNL = useCallback((prompt: string) => {
+  const executeNL = useCallback((prompt: string, llmConfig?: TerminalLLMConfig) => {
     socketRef.current?.emit('nl:execute', {
       prompt,
       sessionId: activeSessionId,
+      // Forward the configured provider so the server uses the right LLM.
+      // undefined = server infers from its own env vars.
+      llmConfig: llmConfig ?? undefined,
     });
   }, [activeSessionId]);
 

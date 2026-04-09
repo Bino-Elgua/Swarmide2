@@ -20,6 +20,118 @@ const simpleGit = require('simple-git');
 const path = require('path');
 const os = require('os');
 
+// ─── Provider-agnostic LLM caller (fetch, no SDK) ────────────────────────────
+// Maps to SwarmIDE2 AIProvider values ('google'|'openai'|'anthropic') plus extras.
+
+const LLM_SYSTEM_PROMPT = `You are a terminal command translator for SwarmIDE2, a multi-agent AI platform.
+Convert the user's natural language request into a JSON command object.
+Rules:
+1. Return ONLY valid JSON — no markdown, no code blocks.
+2. JSON shape: {"type":"shell"|"git"|"phase"|"system","command":"...","explanation":"...","confidence":0.0-1.0,"phase":1-7}
+3. SwarmIDE2 phase trigger commands: TRIGGER_PHASE_1 through TRIGGER_PHASE_7
+4. Use real Unix shell syntax for shell/git commands.
+5. NEVER generate destructive commands (rm -rf, etc.).
+6. If unsure, set confidence<0.5 and pass the raw prompt as the command.`;
+
+async function callLLM(provider, model, apiKey, prompt, baseUrl) {
+  const messages = [
+    { role: 'system', content: LLM_SYSTEM_PROMPT },
+    { role: 'user',   content: `User request: "${prompt}"` },
+  ];
+
+  // ── Google Gemini ──────────────────────────────────────────────────────────
+  if (provider === 'google' || provider === 'gemini') {
+    const key = apiKey || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY;
+    if (!key) return null;
+    const url = `${baseUrl || 'https://generativelanguage.googleapis.com'}/v1beta/models/${model || 'gemini-2.0-flash'}:generateContent?key=${key}`;
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n') }] }],
+      generationConfig: { maxOutputTokens: 512, temperature: 0.2 },
+    };
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+  }
+
+  // ── Anthropic Claude ───────────────────────────────────────────────────────
+  if (provider === 'anthropic' || provider === 'claude') {
+    const key = apiKey || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+    if (!key) return null;
+    const chatMessages = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }));
+    const systemMsg = messages.find(m => m.role === 'system')?.content;
+    const body = { model: model || 'claude-haiku-4-5-20251001', max_tokens: 512, temperature: 0.2, messages: chatMessages };
+    if (systemMsg) body.system = systemMsg;
+    const resp = await fetch(`${baseUrl || 'https://api.anthropic.com'}/v1/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.content?.[0]?.text ?? null;
+  }
+
+  // ── Ollama (local, no key required) ───────────────────────────────────────
+  if (provider === 'ollama') {
+    const ollamaUrl = baseUrl || process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+    const combinedPrompt = messages.map(m => m.content).join('\n\n');
+    try {
+      const resp = await fetch(`${ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model || 'llama3', prompt: combinedPrompt, stream: false }),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data?.response ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── OpenAI-compatible (openai/gpt, groq, mistral, deepseek, perplexity) ───
+  const OPENAI_BASES = {
+    openai:     'https://api.openai.com/v1',
+    gpt:        'https://api.openai.com/v1',
+    groq:       'https://api.groq.com/openai/v1',
+    mistral:    'https://api.mistral.ai/v1',
+    deepseek:   'https://api.deepseek.com/v1',
+    perplexity: 'https://api.perplexity.ai',
+  };
+  const KEY_MAP = {
+    openai:     ['OPENAI_API_KEY'],
+    gpt:        ['OPENAI_API_KEY'],
+    groq:       ['GROQ_API_KEY'],
+    mistral:    ['MISTRAL_API_KEY'],
+    deepseek:   ['DEEPSEEK_API_KEY'],
+    perplexity: ['PERPLEXITY_API_KEY'],
+  };
+  const resolvedBase = baseUrl || OPENAI_BASES[provider];
+  if (!resolvedBase) return null;
+  const resolvedKey = apiKey || (KEY_MAP[provider] || []).map(k => process.env[k]).find(Boolean);
+  if (!resolvedKey) return null;
+
+  const DEFAULT_MODELS = { openai: 'gpt-4o-mini', gpt: 'gpt-4o-mini', groq: 'llama3-8b-8192', mistral: 'mistral-small-latest', deepseek: 'deepseek-chat', perplexity: 'llama-3.1-sonar-small-128k-online' };
+  const resp = await fetch(`${resolvedBase}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolvedKey}` },
+    body: JSON.stringify({ model: model || DEFAULT_MODELS[provider] || 'gpt-4o-mini', messages, max_tokens: 512, temperature: 0.2 }),
+  });
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  return data?.choices?.[0]?.message?.content ?? null;
+}
+
+/** Pick the best available provider from env vars when the client doesn't specify one. */
+function inferProvider() {
+  if (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY) return { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' };
+  if (process.env.OPENAI_API_KEY)   return { provider: 'openai',    model: 'gpt-4o-mini' };
+  if (process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY) return { provider: 'gemini', model: 'gemini-2.0-flash' };
+  if (process.env.GROQ_API_KEY)     return { provider: 'groq',      model: 'llama3-8b-8192' };
+  return { provider: 'ollama', model: 'llama3' }; // local fallback
+}
+
 const PORT = process.env.TERMINAL_PORT || 3001;
 const DEFAULT_SHELL = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -217,47 +329,63 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Natural language command parsing
+  // Natural language command parsing — provider-agnostic
   socket.on('nl:execute', async (payload) => {
-    const { prompt, sessionId } = payload;
-    const trimmed = (prompt || '').trim().toLowerCase();
+    const { prompt, sessionId, llmConfig } = payload;
+    const trimmed = (prompt || '').trim();
+    const lower = trimmed.toLowerCase();
 
-    // Static rule matching
-    const rules = [
-      { pattern: /^(run|execute|start)?\s*tests?$/, command: 'npm test', explanation: 'Run test suite' },
-      { pattern: /^(install|npm install)$/, command: 'npm install', explanation: 'Install dependencies' },
-      { pattern: /^(build|npm run build)$/, command: 'npm run build', explanation: 'Build project' },
-      { pattern: /^(git\s+)?status$/, command: 'git status', explanation: 'Git status' },
-      { pattern: /^(ls|list|show)\s*(files?)?$/, command: 'ls -la', explanation: 'List files' },
-      { pattern: /^(pwd|where)$/, command: 'pwd', explanation: 'Current directory' },
-      { pattern: /^clear$/, command: 'clear', explanation: 'Clear terminal' },
-      { pattern: /^(git\s+)?log$/, command: 'git log --oneline -20', explanation: 'Show git log' },
+    // ── 1. Static rules (instant, no LLM) ─────────────────────────────────
+    const STATIC = [
+      { p: /^(run|execute|start)?\s*tests?$/i,      r: { type: 'shell',  command: 'npm test',              explanation: 'Run test suite',            confidence: 0.95 } },
+      { p: /^(install|npm install)$/i,              r: { type: 'shell',  command: 'npm install',            explanation: 'Install dependencies',       confidence: 0.95 } },
+      { p: /^(build|npm run build)$/i,              r: { type: 'shell',  command: 'npm run build',          explanation: 'Build project',              confidence: 0.95 } },
+      { p: /^(git\s+)?status$/i,                    r: { type: 'git',    command: 'git status',             explanation: 'Git status',                 confidence: 0.95 } },
+      { p: /^(git\s+)?log$/i,                       r: { type: 'git',    command: 'git log --oneline -20',  explanation: 'Show git log',               confidence: 0.95 } },
+      { p: /^(ls|list|show)\s*(files?)?$/i,         r: { type: 'shell',  command: 'ls -la',                 explanation: 'List files',                 confidence: 0.95 } },
+      { p: /^(pwd|where)$/i,                        r: { type: 'shell',  command: 'pwd',                    explanation: 'Current directory',          confidence: 0.95 } },
+      { p: /^clear$/i,                              r: { type: 'system', command: 'clear',                  explanation: 'Clear terminal',             confidence: 0.95 } },
+      { p: /^(analyz|cca|code analysis)/i,          r: { type: 'phase',  command: 'TRIGGER_PHASE_3', phase: 3, explanation: 'CCA code analysis',      confidence: 0.9  } },
+      { p: /^(ralph|prd|iterate)/i,                 r: { type: 'phase',  command: 'TRIGGER_PHASE_4', phase: 4, explanation: 'Ralph Loop',             confidence: 0.9  } },
+      { p: /^(health|monitor)\b/i,                  r: { type: 'phase',  command: 'TRIGGER_PHASE_6', phase: 6, explanation: 'Health monitor',         confidence: 0.9  } },
+      { p: /^(compress|rlm|context)/i,              r: { type: 'phase',  command: 'TRIGGER_PHASE_2', phase: 2, explanation: 'RLM compression',        confidence: 0.9  } },
+      { p: /^(conflict|resolve|vote)/i,             r: { type: 'phase',  command: 'TRIGGER_PHASE_1', phase: 1, explanation: 'Conflict resolution',    confidence: 0.9  } },
+      { p: /^(multi.?model|synthesis)/i,            r: { type: 'phase',  command: 'TRIGGER_PHASE_5', phase: 5, explanation: 'Multi-model synthesis',  confidence: 0.9  } },
     ];
 
     let parsed = null;
-    for (const rule of rules) {
-      if (rule.pattern.test(trimmed)) {
-        parsed = { type: 'shell', command: rule.command, explanation: rule.explanation, confidence: 0.95 };
-        break;
-      }
+    for (const { p, r } of STATIC) {
+      if (p.test(lower)) { parsed = r; break; }
     }
 
+    // ── 2. LLM fallback with configured provider ───────────────────────────
     if (!parsed) {
-      // Phase trigger detection
-      if (/analyz|cca|code analysis/.test(trimmed)) {
-        parsed = { type: 'phase', command: 'TRIGGER_PHASE_3', phase: 3, explanation: 'Trigger CCA analysis', confidence: 0.9 };
-      } else if (/ralph|prd|iterate/.test(trimmed)) {
-        parsed = { type: 'phase', command: 'TRIGGER_PHASE_4', phase: 4, explanation: 'Trigger Ralph Loop', confidence: 0.9 };
-      } else if (/health|monitor/.test(trimmed)) {
-        parsed = { type: 'phase', command: 'TRIGGER_PHASE_6', phase: 6, explanation: 'Show health monitor', confidence: 0.9 };
-      } else {
-        // Passthrough as raw shell command
-        parsed = { type: 'shell', command: prompt, explanation: 'Passed through as shell command', confidence: 0.5 };
+      const { provider, model, apiKey, baseUrl } = llmConfig || inferProvider();
+      let llmText = null;
+
+      try {
+        llmText = await callLLM(provider, model, apiKey, trimmed, baseUrl);
+      } catch (err) {
+        console.error('[terminal-server] LLM call failed:', err.message);
+      }
+
+      if (llmText) {
+        try {
+          const jsonMatch = llmText.match(/\{[\s\S]*\}/);
+          if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+        } catch {
+          // ignore parse error
+        }
+      }
+
+      if (!parsed) {
+        // Final passthrough — treat the raw input as a shell command
+        parsed = { type: 'shell', command: trimmed, explanation: `Passed through (provider: ${provider || 'none'})`, confidence: 0.3 };
       }
     }
 
-    // Execute in PTY if it's a shell command
-    if (parsed.type === 'shell' && sessionId && sessions[sessionId]) {
+    // ── 3. Execute in PTY if shell/git command ─────────────────────────────
+    if ((parsed.type === 'shell' || parsed.type === 'git') && sessionId && sessions[sessionId]) {
       sessions[sessionId].process.write(parsed.command + '\r');
     }
 
