@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useTerminalBridge } from './hooks/useTerminalBridge';
-import { ProjectState, Agent, AgentStatus, OrchestrationResponse, Message, ProtocolMessage, Phase, FileEntry, TeamMode, TerminalTab, FileVersion, AgentTask, AIProvider, IntelligenceConfig, ProposalOutput, ConflictResolution, CostMetrics } from './types';
+import { ProjectState, Agent, AgentStatus, OrchestrationResponse, Message, ProtocolMessage, Phase, FileEntry, TeamMode, TerminalTab, FileVersion, AgentTask, AIProvider, IntelligenceConfig, ProposalOutput, ConflictResolution, CostMetrics, ToneStyle, NarrationAudience } from './types';
 import { orchestrateTeam, performAgentTask, synthesizeProject, speakText } from './services/geminiService';
 import { resolveConflictingProposals } from './services/conflictResolver';
 import { validateBudget } from './services/costCalculator';
@@ -11,6 +11,9 @@ import { proposalCache, findReuseableProposal } from './services/proposalCache';
 import { getRubricForProject, rankProposalsWithRubric } from './services/customScoringRubric';
 import { synthesizeBalanced } from './services/multiModelSynthesis';
 import { appIntegration } from './services/appIntegration';
+import { hydrateTeamPersonas, setAgentTone, getToneOptions } from './services/agentPersonaService';
+import { narrateAgentAction, narratePhaseCompletion, onNarration } from './services/swarmNarrator';
+import { useSwarmWebSocket } from './services/webSocketService';
 import { HUB_REGISTRY } from './constants';
 import AgentLiveFeed from './components/AgentLiveFeed';
 import AgentList from './components/AgentList';
@@ -30,6 +33,7 @@ import RubricEditor from './components/RubricEditor';
 import MultiModelPanel from './components/MultiModelPanel';
 import ExecutionEngine from './components/ExecutionEngine';
 import IntegrationPanel from './components/IntegrationPanel';
+import { SwarmNarratorPanel } from './components/SwarmNarratorPanel';
 
 type Tab = 'hub' | 'setup' | 'graph' | 'ide' | 'templates';
 
@@ -114,6 +118,11 @@ const App: React.FC = () => {
   // ── Terminal Bridge: real PTY sessions via WebSocket backend ──────────────
   const terminalBridge = useTerminalBridge();
   const { lastNLCommand } = terminalBridge;
+
+  // ── Swarm Narrator & Persona System ─────────────────────────────────────
+  const swarmSocket = useSwarmWebSocket();
+  const [narratorOpen, setNarratorOpen] = useState(false);
+  const [narratorAudience, setNarratorAudience] = useState<NarrationAudience>('technical');
   const [nlInput, setNlInput] = useState('');
   const [terminalMode, setTerminalMode] = useState<'virtual' | 'real'>(() =>
     localStorage.getItem('vibe_terminal_mode') === 'real' ? 'real' : 'virtual'
@@ -733,20 +742,38 @@ const App: React.FC = () => {
 
   const runExecutionLoop = async (initialAgents: Agent[], phases: Phase[]) => {
     if (isSpeechEnabled) speakText("Strategic recruitment complete. Commencing mission execution loops.");
-    
+
+    // ── Hydrate agent personas (builds personaConfig for each agent) ──────
+    const agentsWithPersonas = hydrateTeamPersonas(initialAgents);
+    addLog(`✨ Personas hydrated for ${agentsWithPersonas.length} agents`);
+
+    // ── Subscribe swarmNarrator events → swarmSocket optimistic push ──────
+    const unsubNarrator = onNarration(event => {
+      // Push narration into the swarm WebSocket state for the UI
+      swarmSocket.clearNarrations; // keep ref alive
+      // Emit as a thought so it shows up in the live feed immediately
+      swarmSocket.emitThought({
+        agentId: event.agentId,
+        agentName: event.agentName,
+        agentColor: event.agentColor,
+        thought: `[${event.toneStyle}] ${event.narration}`,
+        phase: event.phase,
+      });
+    });
+
     // Phase 6: Run health check at start
     if ((project as any).healthMonitorVisible) {
       addLog(`🏥 Running pre-flight health checks...`);
       await performHealthCheck();
     }
-    
+
     // Phase 7: Send orchestration start event
     await sendIntegrationEvent('orchestration_started', {
-      agents: initialAgents.length,
+      agents: agentsWithPersonas.length,
       phases: phases.length,
       timestamp: new Date()
     });
-    
+
     // Execute through phases
     for (let phaseIdx = 0; phaseIdx < phases.length; phaseIdx++) {
       const currentPhase = phases[phaseIdx];
@@ -791,6 +818,14 @@ const App: React.FC = () => {
           action: 'SIGNAL',
           text: `Processing directives for role: ${agent.role}...`
         });
+
+        // ── Live narrator: announce agent starting work ──────────────────
+        narrateAgentAction(
+          agent,
+          `starting work on Phase ${phaseIdx + 1}: ${currentPhase.name}`,
+          `Project: ${inputPrompt.slice(0, 200)}`,
+          { audience: narratorAudience, fastPath: true },
+        ).catch(() => {/* non-blocking */});
 
         try {
           // Perform task
@@ -981,6 +1016,16 @@ const App: React.FC = () => {
         await performHealthCheck();
       }
 
+      // ── Narrator: announce phase completion ──────────────────────────
+      narratePhaseCompletion(
+        phaseIdx + 1,
+        currentPhase.name,
+        `${phaseAgents.filter(a => a.status === AgentStatus.COMPLETED).length}/${phaseAgents.length} agents completed`,
+        narratorAudience,
+      ).then(narration => {
+        if (narration) addLog(`🎙️ ${narration}`);
+      }).catch(() => {/* non-blocking */});
+
       // Phase 7: Send phase completion event
       await sendIntegrationEvent('phase_completed', {
         phase: phaseIdx + 1,
@@ -1070,11 +1115,13 @@ const App: React.FC = () => {
 
       if (isSpeechEnabled) speakText("Global synthesis complete. Project manifest ready for review in IDE.");
       setActiveTab('ide');
+      unsubNarrator();
 
     } catch (e) {
       setProject(p => ({ ...p, isSynthesizing: false }));
       addLog("CRITICAL: Global synthesis pipeline failed.");
-      
+      unsubNarrator();
+
       // Phase 7: Send error event
       await sendIntegrationEvent('orchestration_failed', {
         status: 'error',
@@ -1225,7 +1272,17 @@ const App: React.FC = () => {
              <span className="text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-400 bg-indigo-500/5">System Protocol</span>
              <h2 className="text-[10px] font-bold truncate opacity-60 uppercase tracking-widest">{project.prompt || "Strategic Cluster Initialization"}</h2>
            </div>
-           <div className="flex items-center space-x-3">
+           <div className="flex items-center space-x-2">
+             {/* Swarm Narrator toggle */}
+             <button
+               onClick={() => setNarratorOpen(o => !o)}
+               title="Swarm Narrator — live AI commentary"
+               className={`p-1 rounded transition-colors flex items-center space-x-1 text-[8px] font-bold ${narratorOpen ? 'text-purple-400' : 'text-slate-500 hover:text-purple-300'}`}
+             >
+               <i className="fa-solid fa-waveform text-xs" />
+               {swarmSocket.isConnected && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />}
+               {swarmSocket.narrations.length > 0 && <span className="bg-purple-500/30 text-purple-300 text-[7px] rounded-full px-1">{swarmSocket.narrations.length}</span>}
+             </button>
              <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1 text-slate-500 hover:text-white transition-colors"><i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'} text-xs`} /></button>
              <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-1 rounded-md transition-colors" style={{ color: isSidebarOpen ? 'var(--accent)' : 'var(--text-secondary)' }}><i className="fa-solid fa-bars-staggered text-xs" /></button>
            </div>
@@ -2234,6 +2291,29 @@ const App: React.FC = () => {
             <IntegrationPanel projectId={project.prompt.slice(0, 20)} />
           </div>
         )}
+
+        {/* ── Swarm Narrator Panel ─────────────────────────────────────── */}
+        <SwarmNarratorPanel
+          isOpen={narratorOpen}
+          onClose={() => setNarratorOpen(false)}
+          agents={project.agents}
+          currentPhase={project.currentPhase}
+          swarmSocket={swarmSocket}
+          onRequestNarration={(agentId, action, audience) => {
+            const agent = project.agents.find(a => a.id === agentId);
+            if (agent) {
+              narrateAgentAction(agent, action, project.prompt, { audience, fastPath: false })
+                .catch(() => {});
+            }
+          }}
+          theme={GLOBAL_THEMES[activeTheme] ? {
+            bg:     GLOBAL_THEMES[activeTheme].bg,
+            panel:  GLOBAL_THEMES[activeTheme].panel,
+            acc:    GLOBAL_THEMES[activeTheme].acc,
+            fg:     GLOBAL_THEMES[activeTheme].fg,
+            border: GLOBAL_THEMES[activeTheme].border,
+          } : undefined}
+        />
       </main>
     </div>
   );

@@ -1,6 +1,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { ProjectState, ProtocolMessage } from '../types';
+import { getToneDef } from '../services/agentPersonaService';
 
 interface AgentLiveFeedProps {
   project: ProjectState;
@@ -97,12 +98,24 @@ const AgentLiveFeed: React.FC<AgentLiveFeedProps> = ({ project, onSelectAgent })
             </div>
 
             <div className="flex-1 min-w-0">
-              <div className="flex items-center space-x-2 mb-1">
+              <div className="flex items-center flex-wrap gap-1 mb-1">
                 <span className="text-[10px] font-black text-slate-300 uppercase tracking-tight">{log.sourceName}</span>
                 <div className={`px-1.5 py-0.5 rounded border text-[7px] font-black uppercase tracking-tighter ${getActionStyles(log.action)}`}>
                   <i className={`fa-solid ${getActionIcon(log.action)} mr-1`}></i>
                   {log.action}
                 </div>
+                {/* Persona tone badge — shown when agent has a resolved persona */}
+                {(() => {
+                  const agent = project.agents.find(a => a.id === log.sourceId);
+                  const tone  = agent?.personaConfig?.toneStyle ?? agent?.toneStyle;
+                  if (!tone) return null;
+                  const def = getToneDef(tone);
+                  return (
+                    <span className={`px-1.5 py-0.5 rounded-full border text-[7px] font-bold ${def.badgeColor}`}>
+                      <i className={`fa-solid ${def.icon} mr-0.5`} />{def.label}
+                    </span>
+                  );
+                })()}
                 {log.targetName && (
                   <div className="flex items-center space-x-2">
                     <i className="fa-solid fa-arrow-right-long text-slate-800 text-[8px]"></i>

@@ -14,6 +14,69 @@ export type TerminalTab = 'terminal' | 'output' | 'history' | 'snippets' | 'sett
 export type AIProvider = 'google' | 'openai' | 'anthropic' | 'groq' | 'mistral' | 'perplex';
 export type AgentArchetype = 'expert' | 'assistant' | 'rebel' | 'critic' | 'philosopher';
 
+// ── Persona & Narration System ────────────────────────────────────────────────
+
+/** 7 tone styles an agent can adopt in its responses. */
+export type ToneStyle =
+  | 'academic'   // Formal, cite evidence, structured arguments
+  | 'casual'     // Conversational, approachable, contractions
+  | 'playful'    // Witty, emoji-friendly, metaphors
+  | 'brutal'     // Blunt, no padding, harsh truths only
+  | 'concise'    // Minimal words, maximum signal
+  | 'poetic'     // Flowing prose, narrative-style
+  | 'socratic';  // Question-driven, Socratic method
+
+/** Structured persona config derived from an agent's personality fields. */
+export interface AgentPersonaConfig {
+  toneStyle: ToneStyle;
+  /** Injected system prompt fragment for this persona. */
+  systemFragment: string;
+  /** Short display label shown in UI badges. */
+  label: string;
+  /** Tailwind colour class for UI badge. */
+  badgeColor: string;
+  /** Font Awesome icon class. */
+  icon: string;
+}
+
+/** Audience type for swarm narration. */
+export type NarrationAudience = 'technical' | 'executive' | 'educational' | 'debug';
+
+/** A single narration event emitted by SwarmNarrator. */
+export interface NarrationEvent {
+  id: string;
+  agentId: string;
+  agentName: string;
+  agentIcon: string;
+  agentColor: string;
+  action: string;
+  narration: string;
+  audience: NarrationAudience;
+  toneStyle: ToneStyle;
+  timestamp: Date;
+  phase?: number;
+}
+
+/** Provider quality/health snapshot used by LLMProviderRouter. */
+export interface ProviderHealthScore {
+  provider: AIProvider | string;
+  successRate: number;   // 0-1
+  avgLatencyMs: number;
+  errorCount: number;
+  lastChecked: Date;
+  isAvailable: boolean;
+}
+
+/** Live swarm WebSocket event types. */
+export type SwarmSocketEvent =
+  | 'swarm:thought'       // Agent emits a reasoning step
+  | 'swarm:narration'     // Narrator emits a narration line
+  | 'swarm:cost'          // Cost update tick
+  | 'swarm:phase'         // Phase transition
+  | 'swarm:conflict'      // Conflict detected between agents
+  | 'swarm:resolved'      // Conflict resolved
+  | 'swarm:agent_status'; // Agent status change
+
 export interface FileEntry {
   path: string;
   content: string;
@@ -246,6 +309,10 @@ export interface Agent {
   };
   phaseDependencies?: string[];
   specialization?: string[];
+  /** Resolved persona config — populated by agentPersonaService at runtime. */
+  personaConfig?: AgentPersonaConfig;
+  /** Active tone style override (overrides archetype-derived default). */
+  toneStyle?: ToneStyle;
 }
 
 export interface Phase {
