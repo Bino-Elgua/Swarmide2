@@ -15,6 +15,7 @@
 
 import type { Agent, NarrationEvent, NarrationAudience, ToneStyle } from '../types';
 import { routeWithAdapter, type TaskComplexity } from './llmProviderRouter';
+import { emitSwarmEvent } from './webSocketService';
 import type { ProviderType } from './multiProviderService';
 
 // ─── Audience system-prompt fragments ─────────────────────────────────────────
@@ -128,6 +129,8 @@ export async function narrateAgentAction(
 
   const event = buildEvent(agent, action, narration, audience, tone);
   emit(event);
+  // Push to swarm-server broadcast so all connected clients receive it
+  emitSwarmEvent('swarm:narration', { ...event, timestamp: event.timestamp.toISOString() }).catch(() => {});
   return event;
 }
 

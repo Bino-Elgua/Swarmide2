@@ -130,6 +130,21 @@ export function useSwarmWebSocket(): SwarmSocketHook {
       socket.on('disconnect', () => { setIsConnected(false); scheduleReconnect(); });
       socket.on('connect_error', () => { setIsConnected(false); setIsConnecting(false); scheduleReconnect(); });
 
+      // Hydrate on initial connect — server sends buffered history
+      socket.on('swarm:hydrate', (state: {
+        thoughts: SwarmThoughtPayload[];
+        narrations: NarrationEvent[];
+        costTicks: SwarmCostPayload[];
+        phases: SwarmPhasePayload[];
+        conflicts: SwarmConflictPayload[];
+      }) => {
+        if (state.thoughts?.length)   setThoughts(state.thoughts.slice(-200));
+        if (state.narrations?.length) setNarrations(state.narrations.map(n => ({ ...n, timestamp: new Date(n.timestamp) })));
+        if (state.costTicks?.length)  setCostTicks(state.costTicks.slice(-50));
+        if (state.phases?.length)     setPhaseEvents(state.phases);
+        if (state.conflicts?.length)  setConflicts(state.conflicts);
+      });
+
       socket.on('swarm:thought', (p: SwarmThoughtPayload) => {
         setThoughts(prev => [...prev.slice(-199), p]);
       });
@@ -211,27 +226,36 @@ export function useSwarmWebSocket(): SwarmSocketHook {
 
 // ─── Standalone emitter for use in services (outside React) ──────────────────
 
+// Map from SwarmSocketEvent to REST broadcast path suffix
+const EVENT_BROADCAST_PATH: Partial<Record<SwarmSocketEvent, string>> = {
+  'swarm:thought':       'thought',
+  'swarm:narration':     'narration',
+  'swarm:cost':          'cost',
+  'swarm:phase':         'phase',
+  'swarm:conflict':      'conflict',
+  'swarm:resolved':      'resolved',
+  'swarm:agent_status':  'agent_status',
+};
+
 /**
  * Emit a swarm event directly from a service without going through the hook.
- * The terminal-server or swarmNarrator can call this to push events to clients.
- * Note: requires that the swarm WebSocket server is running.
+ * Uses the swarm-server's HTTP broadcast REST API — no transient socket needed.
+ * Falls back silently if the server is not running.
  */
 export async function emitSwarmEvent(
   event: SwarmSocketEvent,
   payload: unknown,
 ): Promise<void> {
-  // Only used server-side — lazy import
+  const suffix = EVENT_BROADCAST_PATH[event];
+  if (!suffix) return;
   try {
-    const { io } = await import('socket.io-client') as typeof import('socket.io-client');
-    const socket = io(SWARM_WS_URL, { path: '/swarm-ws', timeout: 2000 });
-    await new Promise<void>(resolve => {
-      socket.once('connect', () => {
-        socket.emit(event, payload);
-        setTimeout(() => { socket.disconnect(); resolve(); }, 100);
-      });
-      socket.once('connect_error', () => resolve()); // fail silently
+    await fetch(`${SWARM_WS_URL}/broadcast/${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(2000),
     });
   } catch {
-    // WebSocket server not running — silently ignore
+    // Swarm server not running — silently ignore
   }
 }

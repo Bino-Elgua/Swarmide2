@@ -11,7 +11,8 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
     "terminal-server": "node --experimental-require-module api/terminal-server.cjs",
-    "dev:full": "concurrently \"npm run dev\" \"npm run terminal-server\""
+    "swarm-server": "node --experimental-require-module api/swarm-server.cjs",
+    "dev:full": "concurrently \"npm run dev\" \"npm run terminal-server\" \"npm run swarm-server\""
   },
   "dependencies": {
     "@google/genai": "^1.34.0",
